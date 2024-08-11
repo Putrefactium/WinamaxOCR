@@ -42,7 +42,9 @@ search_text = "Sta"
 # Variables pour gérer la temporisation
 last_search_time = 0
 search_interval_PID = 1 # 1 seconde
-search_interval_OCR = 1/3 # 0.33 secondes
+start_pid_timestamp = 0 
+search_interval_OCR = 1 # 0.33 secondes
+start_ocr_timestamp = 0 
 
 # Queue pour partager les résultats entre les threads et le reste du script
 result_queue = queue.Queue()
@@ -50,11 +52,10 @@ result_queue = queue.Queue()
 # Variables pour gérer les threads
 pids = []
 handles = []
-found_window = None
-button_x = None
-button_y = None
+showbutton = False
 pid_thread = None
 handle_thread = None
+found_window_thread = None
 threads_done = threading.Event()
 
 # Variable pour contrôler l'arrêt du script
@@ -71,25 +72,29 @@ def fetch_pids(exe_name):
     threads_done.set()  # Indiquer que la récupération des PID est terminée
 
 def start_pid_handle_threads(exe_name):
-    global pid_thread, handle_thread, threads_done
+    global pid_thread, handle_thread, threads_done, found_window_thread, start_pid_timestamp
+    start_pid_timestamp = time.time()
     threads_done.clear()  # Réinitialiser l'état des threads
     pid_thread = threading.Thread(target=fetch_pids, args=(exe_name,))
     handle_thread = threading.Thread(target=fetch_handles)
+    found_window_thread = threading.Thread(target=found_window, args=(handles, window_title,))
     
     pid_thread.start()
     handle_thread.start()
+    found_window_thread.start()
 
 def start_OCR_thread():
-    global ocr_thread
+    global ocr_thread, start_ocr_timestamp
+    start_ocr_timestamp = time.time()
     threads_done.clear()  # Réinitialiser l'état des threads
-    ocr_thread = threading.Thread(target=monitor_window, args=(handles, window_title, search_text))
+    ocr_thread = threading.Thread(target=search_sta_ocr, args=(handles,))
 
     ocr_thread.start()
 
 def monitor_escape_key():
     while not stop_script.is_set():
         if keyboard.is_pressed('esc'):
-            print("Touche Échap pressée. Arrêt du script.")
+            # print("Touche Échap pressée. Arrêt du script.")
             stop_script.set()  # Définir l'événement pour arrêter le script
         time.sleep(0.1)  # Vérifier toutes les 100 ms 
 
@@ -105,7 +110,7 @@ def current_month():
 def print_duration(start_time, step_name):
     """Affiche la durée écoulée pour une étape donnée."""
     elapsed_time = (time.time() - start_time) * 1000  # Convertir en millisecondes
-    print(f"{step_name} - Durée : {elapsed_time:.2f} ms")
+    # print(f"{step_name} - Durée : {elapsed_time:.2f} ms")
 
 def is_window_visible(hwnd):
     """ Vérifie si une fenêtre est visible """
@@ -127,7 +132,7 @@ def get_hwnds_by_pids(pids):
             hwnd_list.append((hwnd, win32gui.GetWindowText(hwnd)))
 
     win32gui.EnumWindows(enum_window_callback, None)
-    print_duration(start_time, "Récupération des HWNDs")
+    # print_duration(start_time, "Récupération des HWNDs")
     return hwnd_list
 
 def get_apps_pids():
@@ -174,7 +179,7 @@ def get_processes_by_exe(exe_name):
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
     
-    print_duration(start_time, "Récupération des PID")
+    # print_duration(start_time, "Récupération des PID")
     return list(pid_list)
 
 def screen_result(hwnd):
@@ -213,16 +218,16 @@ def screen_result(hwnd):
         )
 
         if capture_rect[0] >= capture_rect[2] or capture_rect[1] >= capture_rect[3]:
-            print(f"Les coordonnées ajustées du rectangle Résultat sont invalides : {capture_rect}")
+            # print(f"Les coordonnées ajustées du rectangle Résultat sont invalides : {capture_rect}")
             return None
 
         with mss.mss() as sct:
             img = sct.grab(capture_rect)
             img_pil = Image.frombytes('RGB', img.size, img.rgb)
-        print_duration(start_time, "Capture de la partie résultat")
+        # print_duration(start_time, "Capture de la partie résultat")
         return img_pil
     except Exception as e:
-        print(f"Erreur lors de la capture de la fenêtre avec HWND {hwnd}: {e}")
+        # print(f"Erreur lors de la capture de la fenêtre avec HWND {hwnd}: {e}")
         return None
 
 def capture_word_part(hwnd, height_rectifier_up=134, width_rectifier=980, max_width=520):
@@ -249,16 +254,16 @@ def capture_word_part(hwnd, height_rectifier_up=134, width_rectifier=980, max_wi
         )
 
         if capture_rect[0] >= capture_rect[2] or capture_rect[1] >= capture_rect[3]:
-            print(f"Les coordonnées ajustées du rectangle Capture sont invalides : {capture_rect}")
+            # print(f"Les coordonnées ajustées du rectangle Capture sont invalides : {capture_rect}")
             return None
 
         with mss.mss() as sct:
             img = sct.grab(capture_rect)
             img_pil = Image.frombytes('RGB', img.size, img.rgb)
-        print_duration(start_time, "Capture du rectangle avec le mot à chercher")
+        # print_duration(start_time, "Capture du rectangle avec le mot à chercher")
         return img_pil
     except Exception as e:
-        print(f"Erreur lors de la capture de la fenêtre avec HWND {hwnd}: {e}")
+        # print(f"Erreur lors de la capture de la fenêtre avec HWND {hwnd}: {e}")
         return None
 
 def preprocess_image(img):
@@ -275,7 +280,7 @@ def preprocess_image(img):
     img = enhancer.enhance(1)
     threshold = 64
     img = img.point(lambda p: p > threshold and 255)
-    print_duration(start_time, "Pré-traitement de l'image")
+    # print_duration(start_time, "Pré-traitement de l'image")
     return img
 
 def search_text_in_image(img, search_text):
@@ -326,9 +331,9 @@ class ButtonWindow(QWidget):
         - Si oui, tente de capturer l'image de la fenêtre spécifiée par l'HWND et de l'enregistrer.
         - Sinon, affiche un message d'erreur indiquant que l'HWND n'est pas défini.
     """
-        print("Bouton cliqué")
+        # print("Bouton cliqué")
         if self.hwnd:  # Utiliser le HWND stocké
-            print(f"Tentative de capture pour la fenêtre avec HWND : {self.hwnd}")
+            # print(f"Tentative de capture pour la fenêtre avec HWND : {self.hwnd}")
             capture_image_and_save(self.hwnd)
         else:
             print("Erreur : HWND non défini pour cette fenêtre.")
@@ -346,7 +351,7 @@ def capture_image_and_save(hwnd):
         # S'assurer que le nom du dossier est correctement encodé
         new_month_folder = new_month_folder.encode('utf-8').decode('utf-8')
         full_path = os.path.join(capture_folder, new_month_folder)
-        print(f"chemin : {full_path}")
+        # print(f"chemin : {full_path}")
 
         if not os.path.exists(full_path):
             os.makedirs(full_path)
@@ -354,10 +359,10 @@ def capture_image_and_save(hwnd):
         timestamp = datetime.now().strftime("%d_%m_%Y")
         file_path = os.path.join(full_path, f"{timestamp}.jpg")
         result_jpg.save(file_path, "JPEG")
-        print(f"Image sauvegardée à : {file_path}")
+        # print(f"Image sauvegardée à : {file_path}")
     else:
-        print("Erreur lors de la capture de l'image.")
-
+         print("Erreur lors de la capture de l'image.")
+ 
 def show_button(coords, hwnd):
     """
     Affiche une fenêtre avec un bouton à la position spécifiée. Si la fenêtre est déjà affichée, met à jour sa position et son HWND.
@@ -408,13 +413,13 @@ def calculate_percentage_and_position(x, y, width, reference_width=1414, max_per
 
     return button_x, button_y
 
-def monitor_window(handles, window_title, search_text):
+def found_window(handles, window_title):
 
-    found_window = False
+    foundwindow = False
         
     for hwnd, title in handles:
         if title == window_title:
-            found_window = True
+            foundwindow = True
             if win32gui.IsWindowVisible(hwnd):
                 # Si la fenêtre existe et n'est pas réduite on récupère sa position et dimension
                 rect = win32gui.GetWindowRect(hwnd)
@@ -423,31 +428,32 @@ def monitor_window(handles, window_title, search_text):
                 height = y1 - y
                 # Si elle est en -32k -32k elle est réduite
                 if x == -32000 and y == -32000:
-                    print(f"[{current_time}] HWND : {hwnd}, Titre : {title}, Visible : Non (Réduite)")
+                    # print(f"[{current_time}] HWND : {hwnd}, Titre : {title}, Visible : Non (Réduite)")
                     hide_button()
                 else:
                     print(f"[{current_time}] HWND : {hwnd}, Titre : {title}, Visible: Oui, Coordonnées : ({x}, {y}, {x1}, {y1}), Taille : ({width}x{height})")
                     
-                    img = capture_word_part(hwnd)  
-                        
-                    if img:
-                        found = search_text_in_image(img, search_text)
-                        if found:
-                            print("Texte Sta trouvé")
-                            button_x, button_y = calculate_percentage_and_position(x, y, width)
-                            show_button((button_x, button_y), hwnd)
-                        else:
-                            print(f"[{current_time}] Texte '{search_text}' non trouvé dans la fenêtre.")
-                            button_x, button_y = (-32000, -32000)
-                            hide_button()
+    result_queue.put(('found_window', foundwindow))      
 
-            if not found_window:
-                print(f"[{current_time}] Aucune fenêtre Winamax trouvée.")
-                button_x, button_y = (-32000, -32000)
-                hide_button()
+def search_sta_ocr(handles):
 
-        result_queue.put(('found_window', (found_window, button_x, button_y))) # Mettre le caractère found_window dans la queue 
-        threads_done.set()  # Indiquer que la récupération de found_window est terminée      
+    global showbutton
+    global search_text
+    global window_title
+
+    for hwnd, title in handles:
+        if title == window_title:
+
+            img = capture_word_part(hwnd)  
+                                
+            if img:
+                found = search_text_in_image(img, search_text)
+                if found:
+                    print("Texte Sta trouvé")
+                else:
+                     print(f"[{current_time}] Texte '{search_text}' non trouvé dans la fenêtre.")
+                showbutton = found
+                
 
 app = QApplication([]) # Initialise l'environnement Qt
 
@@ -459,51 +465,66 @@ escape_thread = threading.Thread(target=monitor_escape_key)
 escape_thread.start()
 
 while not stop_script.is_set():
-    iteration_start_time = time.time()
+    foundwindow = True
     current_timestamp = time.time()
     current_time = datetime.now().strftime("%H:%M:%S")
 
     # Vérifier l'état des threads
     if threads_done.is_set():
-            while not result_queue.empty():
-                data_type, data = result_queue.get()
-                if data_type == 'pids':
-                    pids = data
-                    print(f"PIDS: {pids}")
-                elif data_type == 'handles':
-                    handles = data
-                    print(f"HWND : {handles}")   
-                elif data_type == 'found_window':
-                    found_window, button_x, button_y = data
-                    print(f"found_window = {found_window}, button x = {button_x}, button y = {button_y}")
+        while not result_queue.empty():
+            data_type, data = result_queue.get()
+            if data_type == 'pids':
+                pids = data
+                # print(f"PIDS: {pids}")
+            elif data_type == 'handles':
+                handles = data
+                # # print(f"HWND : {handles}")   
+            elif data_type == 'found_window':
+                foundwindow = data
+                # print(f"found_window = {foundwindow}")
+                       
+    if foundwindow:
+
+        for hwnd, title in handles:
+            if title == window_title:
+
+                rect = win32gui.GetWindowRect(hwnd)
+
+                x, y, x1, y1 = rect
+                width = x1 - x
+                height = y1 - y
+                # Si elle est en -32k -32k elle est réduite
+                if x == -32000 and y == -32000:
+                    # print(f"[{current_time}] HWND : {hwnd}, Visible : Non (Réduite)")
+                    hide_button()
+                    # print("bouton caché")
+                else:
+                    # print(f"[{current_time}] HWND : {hwnd}, Visible: Oui, Coordonnées : ({x}, {y}, {x1}, {y1}), Taille : ({width}x{height})")
+                    button_x, button_y = calculate_percentage_and_position(x,y,width)
                     
-            if found_window and (button_x != -32000 and button_y != -32000):                            
-                            print(f"Draw du bouton à partir de : button x = {button_x}, button y = {button_y} sur le handle : {window_title}")
-                            print(f"handles : {handles}")
-                            show_button((button_x, button_y), window_title)
-            elif found_window:
-                print(f"[{current_time}] HWND : {handles}, Visible : Non (Réduite)")
-                hide_button()
-                print("bouton caché")
+                    if showbutton:
+                        show_button((button_x, button_y), hwnd)
+                    else:
+                        hide_button()
+                                        
+    else:
+        hide_button()
+        # print("bouton caché 404")
 
-            else:
-                hide_button()
-                print("bouton caché")
+# Redémarrer les threads pour obtenir des informations mises à jour pour le PID et HWND
+    if current_timestamp - start_pid_timestamp >= (search_interval_PID):
+        start_pid_handle_threads(exe_name)
+        print("start PID HWND thread")
 
-        # Redémarrer les threads pour obtenir des informations mises à jour pour le PID et HWND
-            if current_timestamp - last_search_time >= (search_interval_PID):
-                start_pid_handle_threads(exe_name)
-                print("start PID HWND thread")
+    if current_timestamp - start_ocr_timestamp >= (search_interval_OCR):
+        start_OCR_thread()
+        print("start OCR thread")
 
-            if current_timestamp - last_search_time >= (search_interval_OCR):
-                start_OCR_thread()
-                print("start OCR thread")
-        
-            # Réinitialiser l'état des threads
-            threads_done.clear()
+    # Réinitialiser l'état des threads
+    threads_done.clear()
 
-    print("===" * 30)
-    print_duration(iteration_start_time, "Temps total Boucle principale")
+    # print("===" * 30)
+    # print_duration(iteration_start_time, "Temps total Boucle principale")
     app.processEvents()
     time.sleep(1/165)
 

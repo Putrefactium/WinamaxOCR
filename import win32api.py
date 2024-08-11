@@ -41,7 +41,7 @@ search_text = "Sta"
 
 # Variables pour gérer la temporisation
 last_search_time = 0
-search_interval = 1 # 0.33 secondes
+search_interval = 4 # 0.33 secondes
 
 # Queue pour partager les résultats entre les threads et le reste du script
 result_queue = queue.Queue()
@@ -169,7 +169,7 @@ def get_processes_by_exe(exe_name):
 def screen_result(hwnd):
     """
     Capture une partie spécifique de la fenêtre identifiée par `hwnd` et retourne l'image capturée.
-    La dimension correspond au rectangle composant la partie " Statistiques " de Winamax, avec les résultats de la session
+    La dimension correspond au rectangle composant la partie " Sta " de Winamax, avec les résultats de la session
 
     :param hwnd: Handle de la fenêtre (HWND) à capturer
     :return: Image PIL de la partie capturée de la fenêtre, ou None en cas d'erreur
