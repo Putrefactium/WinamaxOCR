@@ -1,0 +1,351 @@
+import psutil
+import win32gui
+import win32process
+import time
+from datetime import datetime
+from PIL import Image, ImageEnhance
+import pytesseract
+import os
+import mss
+import pygetwindow as gw
+from PyQt5.QtWidgets import QApplication, QLabel, QPushButton, QWidget
+from PyQt5.QtGui import QPixmap
+from PyQt5.QtCore import Qt, QRect
+
+# Chemin d'accès à l'exécutable Tesseract
+pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+
+# Dossier pour sauvegarder les captures d'écran
+capture_folder = "captures"
+if not os.path.exists(capture_folder):
+    os.makedirs(capture_folder)
+
+# Chemin de l'image du bouton
+button_image_path = "DLBTN.png"
+
+# Variables globales
+button_coords = None
+button_window = None
+exe_name = "winamax.exe"
+window_title = "Winamax"
+search_text = "Statistiques"
+
+def get_processes_by_exe(exe_name):
+    """
+    Récupère une liste des PID de tous les processus correspondants au nom d'un exécutable donné, 
+    ainsi que ceux de leurs processus enfants.
+
+    :param exe_name: Nom de l'exécutable à rechercher
+    :return: Liste des PID (Process IDs) des processus trouvés
+    """
+    pid_list = []
+    for proc in psutil.process_iter(['pid', 'name', 'ppid']):
+        try:
+            if proc.info['name'].lower() == exe_name.lower():
+                pid_list.append(proc.info['pid'])
+                for child in proc.children(recursive=True):
+                    pid_list.append(child.pid)
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+    return pid_list
+
+def get_hwnds_by_pids(pids):
+    """
+    Récupère une liste de handle de fenêtre (HWND) et leurs titres pour les processus spécifiés par leurs PID.
+
+    :param pids: Liste des PID (Process IDs) des processus pour lesquels récupérer les handles de fenêtres
+    :return: Liste de tuples contenant le handle de fenêtre (HWND) et le titre de la fenêtre
+    """
+    hwnd_list = []
+    def enum_window_callback(hwnd, lParam):
+        _, pid = win32process.GetWindowThreadProcessId(hwnd)
+        if pid in pids:
+            hwnd_list.append((hwnd, win32gui.GetWindowText(hwnd)))
+    win32gui.EnumWindows(enum_window_callback, None)
+    return hwnd_list
+
+def capture_result_part(hwnd):
+    """
+    Capture une partie spécifique de la fenêtre identifiée par `hwnd` et retourne l'image capturée.
+    La dimension correspond au rectangle composant la partie " Statistiques " de Winamax, avec les résultats de la session
+
+    :param hwnd: Handle de la fenêtre (HWND) à capturer
+    :return: Image PIL de la partie capturée de la fenêtre, ou None en cas d'erreur
+    """
+    try:
+        win = gw.Window(hwnd)
+        rect = (win.left, win.top, win.right, win.bottom)
+
+        height_rectifier_up = 134  # Offset début hauteur de la partie à capturer (coté haut rectangle)
+        height_rectifier_low = 178  # Offset fin hauteur de la partie à capturer (coté bas rectangle)
+        width_rectifier = 900  # Offset de la largeur de la partie à capturer (cotés gauche et droit rectangle)
+
+        window_width = rect[2] - rect[0]  # Largeur de la fenêtre
+        max_offset = 300  # Décalage maximum autorisé
+        threshold_width = 1414  # Largeur seuil en pixel pour commencer le décalage (les bandes noires apparaissent à ce moment)
+
+        # Calcul du décalage progressif basé sur la largeur de la fenêtre
+        if window_width > threshold_width:
+            extra_width = window_width - threshold_width
+            additional_offset = int(min(max_offset, extra_width / 2)) # Divisé par deux car les bandes noires sont sur les deux cotés de la fenêtre
+        else:
+            additional_offset = 0
+
+        capture_rect = (
+            rect[0] + additional_offset,  # Ajustement progressif du côté gauche
+            rect[1] + height_rectifier_up,  # Hauteur de fenêtre moins le rectifieur de hauteur
+            rect[0] + width_rectifier + additional_offset,  # Ajustement progressif de la largeur
+            rect[1] + height_rectifier_low  # Hauteur de fenêtre moins le rectifieur bas
+        )
+
+        if capture_rect[0] >= capture_rect[2] or capture_rect[1] >= capture_rect[3]:
+            print(f"Les coordonnées ajustées du rectangle Résultat sont invalides : {capture_rect}")
+            return None
+
+        with mss.mss() as sct:
+            img = sct.grab(capture_rect)
+            img_pil = Image.frombytes('RGB', img.size, img.rgb)
+        return img_pil
+    except Exception as e:
+        print(f"Erreur lors de la capture de la fenêtre avec HWND {hwnd}: {e}")
+        return None
+
+def capture_word_part(hwnd, height_rectifier_up=134, width_rectifier=900, max_width=520):
+    """
+    Capture une partie spécifique de la fenêtre identifiée par `hwnd` et retourne l'image capturée.
+    La dimension correspond au rectangle à la position relative du mot " Statistiques ", afin de réduire la durée du traitement OCR
+
+    :param hwnd: Handle de la fenêtre (HWND) à capturer
+    :param height_rectifier_up: Décalage vertical depuis le haut de la fenêtre pour le début de la capture
+    :param width_rectifier: Décalage horizontal depuis la droite de la fenêtre pour ajuster la largeur
+    :param max_width: Décalage vertical depuis le bas de la fenêtre pour ajuster la hauteur
+    :return: Image PIL de la partie capturée de la fenêtre, ou None en cas d'erreur
+    """
+    try:
+        win = gw.Window(hwnd)
+        rect = (win.left, win.top, win.right, win.bottom)
+
+        capture_rect = (
+            rect[0],
+            rect[1] + height_rectifier_up,
+            rect[2] - width_rectifier,
+            rect[3] - max_width
+        )
+
+        if capture_rect[0] >= capture_rect[2] or capture_rect[1] >= capture_rect[3]:
+            print(f"Les coordonnées ajustées du rectangle Capture sont invalides : {capture_rect}")
+            return None
+
+        with mss.mss() as sct:
+            img = sct.grab(capture_rect)
+            img_pil = Image.frombytes('RGB', img.size, img.rgb)
+        return img_pil
+    except Exception as e:
+        print(f"Erreur lors de la capture de la fenêtre avec HWND {hwnd}: {e}")
+        return None
+
+def preprocess_image(img):
+    """
+    Pré-traite une image en la convertissant en niveaux de gris, en ajustant le contraste,
+    et en appliquant un seuillage pour binariser l'image.
+
+    :param img: Image PIL à pré-traiter
+    :return: Image PIL pré-traitée (binarisée)
+    """
+    img = img.convert('L')
+    enhancer = ImageEnhance.Contrast(img)
+    img = enhancer.enhance(1)
+    threshold = 64
+    img = img.point(lambda p: p > threshold and 255)
+    return img
+
+def search_text_in_image(img, search_text):
+    """
+    Recherche un texte spécifique dans une image en utilisant l'OCR (Reconnaissance Optique de Caractères) et mesure le temps de traitement.
+
+    :param img: Image PIL dans laquelle rechercher le texte
+    :param search_text: Texte à rechercher dans l'image
+    :return: Tuple (found, elapsed_time) où :
+             - `found` est un booléen indiquant si le texte a été trouvé
+             - `elapsed_time` est le temps écoulé pour la recherche en secondes
+    """
+    start_time = time.time()
+    text = pytesseract.image_to_string(img, lang='eng')
+    end_time = time.time()
+    elapsed_time = end_time - start_time
+    found = search_text in text
+    return found, elapsed_time
+
+class ButtonWindow(QWidget):
+    """
+        Initialise une fenêtre sans bordure avec un bouton superposé à une image.
+
+        :param coords: Tuple (x, y) représentant les coordonnées de la fenêtre
+        :param hwnd: Handle de la fenêtre pour la référence spécifique (non utilisé directement ici)
+        :param parent: Widget parent (par défaut None)
+        """
+    def __init__(self, coords, hwnd, parent=None):
+        super(ButtonWindow, self).__init__(parent)
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setGeometry(QRect(coords[0], coords[1], 100, 100))
+        self.hwnd = hwnd  # Stocker le HWND spécifique pour cette instance
+
+        self.label = QLabel(self)
+        self.label.setPixmap(QPixmap(button_image_path))
+        self.label.setGeometry(0, 0, 100, 100)
+
+        self.button = QPushButton(self)
+        self.button.setGeometry(0, 0, 100, 100)
+        self.button.setFlat(True)
+        self.button.setStyleSheet("background: transparent;")
+        self.button.clicked.connect(self.on_button_click)
+
+    def on_button_click(self):
+        """
+        Gère les clics sur le bouton. Cette méthode est appelée lorsque le bouton est cliqué.
+
+        - Affiche un message dans la console indiquant que le bouton a été cliqué.
+        - Vérifie si le handle de la fenêtre (HWND) est défini.
+        - Si oui, tente de capturer l'image de la fenêtre spécifiée par l'HWND et de l'enregistrer.
+        - Sinon, affiche un message d'erreur indiquant que l'HWND n'est pas défini.
+    """
+        print("Bouton cliqué")
+        if self.hwnd:  # Utiliser le HWND stocké
+            print(f"Tentative de capture pour la fenêtre avec HWND : {self.hwnd}")
+            capture_image_and_save(self.hwnd)
+        else:
+            print("Erreur : HWND non défini pour cette fenêtre.")
+
+def capture_image_and_save(hwnd):
+    """
+    Capture une image de la fenêtre spécifiée par `hwnd`, enregistre l'image dans un fichier JPG avec un nom basé sur l'horodatage,
+    et affiche un message de confirmation ou d'erreur.
+
+    :param hwnd: Handle de la fenêtre dont l'image doit être capturée
+    """
+    result_jpg = capture_result_part(hwnd)
+    if result_jpg:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        file_path = os.path.join(capture_folder, f"capture_{timestamp}.jpg")
+        result_jpg.save(file_path, "JPEG")
+        print(f"Image sauvegardée à : {file_path}")
+    else:
+        print("Erreur lors de la capture de l'image.")
+
+def show_button(coords, hwnd):
+    """
+    Affiche une fenêtre avec un bouton à la position spécifiée. Si la fenêtre est déjà affichée, met à jour sa position et son HWND.
+
+    :param coords: Tuple (x, y) représentant les coordonnées où la fenêtre doit être affichée
+    :param hwnd: Handle de la fenêtre dont l'image sera capturée lorsque le bouton est cliqué
+    """
+    global button_window
+    if not button_window:
+        button_window = ButtonWindow(coords, hwnd)
+        button_window.show()
+    else:
+        x, y = int(coords[0]), int(coords[1])
+        button_window.setGeometry(QRect(x, y, 100, 100))
+        button_window.raise_()
+        button_window.activateWindow()
+        button_window.hwnd = hwnd  # Mettre à jour le HWND si nécessaire
+
+def hide_button():
+    """
+    Cache la fenêtre du bouton si elle est actuellement affichée.
+    Ferme la fenêtre et libère la référence globale à cette instance de ButtonWindow.
+    """
+    global button_window
+    if button_window:
+        button_window.close()
+        button_window = None
+
+def calculate_percentage_and_position(x, y, width, reference_width=1414, max_percentage=95, min_percentage=80):
+    """
+    Calcule le pourcentage de la largeur pour la position du bouton et la position en pixels.
+    :param x: Coordonnée X du coin supérieur gauche de la fenêtre
+    :param y: Coordonnée Y du coin supérieur gauche de la fenêtre
+    :param width: Largeur de la fenêtre
+    :param reference_width: Largeur de référence pour commencer à réduire le pourcentage
+    :param max_percentage: Pourcentage maximum pour une petite fenêtre
+    :param min_percentage: Pourcentage minimum pour une grande fenêtre
+    :return: (button_x, button_y) coordonnées du bouton
+    """
+    if width <= reference_width:
+        percentage = max_percentage
+    else:
+        scale = (min_percentage - max_percentage) / (2000 - reference_width)
+        percentage = max_percentage + scale * (width - reference_width)
+
+    button_x = int(x + ((percentage * width) / 100))
+    button_y = int(y + 108)
+
+    return button_x, button_y
+
+app = QApplication([])
+
+# Variables pour gérer la temporisation
+last_search_time = 0
+search_interval = 1 / 3  # 1 / 3 seconde
+
+while True:
+    pids = get_processes_by_exe(exe_name)
+    handles = get_hwnds_by_pids(pids)
+    current_time = datetime.now().strftime("%H:%M:%S")
+    current_timestamp = time.time()
+
+    found_window = False
+    for hwnd, title in handles:
+        if title == window_title:
+            found_window = True
+            if win32gui.IsWindowVisible(hwnd):
+                rect = win32gui.GetWindowRect(hwnd)
+                x, y, x1, y1 = rect
+                width = x1 - x
+                height = y1 - y
+
+                if x == -32000 and y == -32000:
+                    print(f"[{current_time}] HWND : {hwnd}, Titre : {title}, Visible : Non (Réduite)")
+                    hide_button()
+                else:
+                    print(f"[{current_time}] HWND : {hwnd}, Titre : {title}, Visible: Oui, Coordonnées : ({x}, {y}, {x1}, {y1}), Taille : ({width}x{height})")
+
+                    button_coords = (hwnd, (x, y, x1, y1))
+
+                    if current_timestamp - last_search_time >= search_interval:
+                        img = capture_word_part(hwnd)
+
+                        if img:
+                            img_processed = preprocess_image(img)
+                            found, elapsed_time = search_text_in_image(img_processed, search_text)
+
+                            if found:
+                                print(f"[{current_time}] Texte '{search_text}' trouvé dans la fenêtre. Temps de recherche : {elapsed_time:.2f} secondes.")
+
+                                # button_x, button_y = calculate_percentage_and_position(x, y, width)
+                                # show_button((button_x, button_y), hwnd)
+                            else:
+                                print(f"[{current_time}] Texte '{search_text}' non trouvé dans la fenêtre. Temps de recherche: {elapsed_time:.2f} secondes.")
+                                hide_button()
+                        else:
+                            print(f"[{current_time}] Erreur lors de la capture de l'image.")
+                            hide_button()
+                        
+                        last_search_time = current_timestamp
+                    else:
+                        if found:
+                            button_x, button_y = calculate_percentage_and_position(x, y, width)
+                            show_button((button_x, button_y), hwnd)
+            else:
+                print(f"[{current_time}] HWND : {hwnd}, Titre : {title}, Visible : Non (Réduite)")
+                hide_button()
+
+    if not found_window:
+        print(f"[{current_time}] Aucune fenêtre Winamax trouvée.")
+        hide_button()
+
+    print("===" * 30)
+    app.processEvents()
+    time.sleep(1/165)
+
