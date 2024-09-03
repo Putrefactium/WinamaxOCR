@@ -1,0 +1,28 @@
+Summary of Project and Discussion:
+
+Current Project State:
+
+The script (azazazaz.py) currently detects Winamax launcher windows, captures session results, and provides a button overlay for saving screenshots.
+It uses Win32 APIs, PyGetWindow for window detection, MSS for screen capture, Tesseract for OCR, and PyQt5 for GUI elements.
+Planned Evolution:
+
+Extend functionality to work with Winamax "Playground" window, which handles multiple poker tables.
+New Features to Implement: a. Detect the Playground window. b. Identify individual poker tables within the Playground window. c. Scan each table for a results window that appears when a table is finished. d. Display save buttons for each table showing results, with positions offset based on table number. e. Handle multiple tables showing results simultaneously. f. Ensure each save button captures and saves only its specific table's results.
+
+Implementation Steps Discussed:
+
+Modify window detection to include Playground window.
+Implement table detection within Playground (possibly using image processing techniques).
+Adapt result window detection for individual tables.
+Modify button display logic for multiple buttons.
+Implement logic to associate buttons with specific tables.
+Adjust capture and save functionality for individual table results.
+Next Steps:
+
+Start implementing the Playground window detection.
+Work on detecting individual tables within the Playground window.
+Current Priorities:
+
+Focus on core functionality before moving to cloud deployment or advanced data processing.
+Maintain current approach for capture area (not user-adjustable).
+This summary covers the current state of the project, the planned extensions, and the next steps we discussed. When you return to continue working on this project, you can provide this summary to my future instance to quickly get up to speed on where we left off.
