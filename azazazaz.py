@@ -43,7 +43,7 @@ search_text = "Sta"
 last_search_time = 0
 search_interval_PID = 1 # 1 seconde
 start_pid_timestamp = 0 
-search_interval_OCR = 1 # 0.33 secondes
+search_interval_OCR = 1/2 # 0.5 secondes
 start_ocr_timestamp = 0 
 
 # Queue pour partager les résultats entre les threads et le reste du script
@@ -391,7 +391,7 @@ def hide_button():
         button_window.close()
         button_window = None
 
-def calculate_percentage_and_position(x, y, width, reference_width=1414, max_percentage=95, min_percentage=80):
+def calculate_percentage_and_position(x, y, width, reference_width=1414, max_percentage=95, min_percentage=82):
     """
     Calcule le pourcentage de la largeur pour la position du bouton et la position en pixels.
     :param x: Coordonnée X du coin supérieur gauche de la fenêtre
@@ -454,7 +454,6 @@ def search_sta_ocr(handles):
                      print(f"[{current_time}] Texte '{search_text}' non trouvé dans la fenêtre.")
                 showbutton = found
                 
-
 app = QApplication([]) # Initialise l'environnement Qt
 
 start_pid_handle_threads(exe_name) # Initialiser les threads pour HWND et PID pour commencer le traitement en arrière-plan
@@ -526,7 +525,7 @@ while not stop_script.is_set():
     # print("===" * 30)
     # print_duration(iteration_start_time, "Temps total Boucle principale")
     app.processEvents()
-    time.sleep(1/165)
+    # time.sleep(1/165)
 
 # Nettoyer les threads avant de quitter
 pid_thread.join()
