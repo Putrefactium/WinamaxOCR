@@ -30,7 +30,7 @@ if not os.path.exists(capture_folder):
     os.makedirs(capture_folder)
 
 # Chemin de l'image du bouton
-button_image_path = "DLBTN.png"
+button_image_path = "/Assets/DLBTN.png"
 
 # Variables globales
 button_coords = None
