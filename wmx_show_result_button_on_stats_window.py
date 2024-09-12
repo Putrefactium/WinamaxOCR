@@ -21,6 +21,7 @@ import logging
 
 winamax_proc_name = "Winamax.exe"
 winamax_window_name = "Winamax"
+playground_window_name = "Playground"
 winamax_string_searched = "Stat"
 button_image_path = r"Assets\DLBTN.png"
 x_coord_window = 0
@@ -119,7 +120,7 @@ def get_wmx_hwnd_and_title_(pids):
 
     return hwnd_list
 
-def filter_hwnd_list_(hwnd_list, winamax_window_name):
+def filter_hwnd_list_main_winamax_window_(hwnd_list, window_name):
     """
     Filter the hwnd_list to only include hwnd with title equal to winamax_window_name.
     Parameters:
@@ -130,7 +131,29 @@ def filter_hwnd_list_(hwnd_list, winamax_window_name):
     """
 
     try:
-        hwnd_list_filtered = [(hwnd, title) for hwnd, title in hwnd_list if title == winamax_window_name] # Filter the list based on the window title matching the specified title
+        hwnd_list_filtered = [(hwnd, title) for hwnd, title in hwnd_list if title == window_name] # Filter the list based on the window title matching the specified title
+    except Exception as e:
+        logging.error(f"Error occurred during filtering: {e}")
+        hwnd_list_filtered = []
+
+    return hwnd_list_filtered
+
+def filter_hwnd_list_winamax_tables_(hwnd_list, window_name):
+    """
+    Filter the hwnd_list to only include hwnd with title starting with window_name,
+    excluding the window named exactly "winamax".
+    This func is used to list all the tables opened in Winamax, if PlayGround isn't used.
+    Parameters:
+    - hwnd_list (list): A list of tuples containing the window handle (hwnd) and the window title (str).
+    - window_name (str): The window title prefix to filter for.
+    Returns:
+    - hwnd_list_filtered (list): A filtered list of tuples containing the window handle (hwnd) and the window title (str).
+    """
+    try:
+        hwnd_list_filtered = [
+            (hwnd, title) for hwnd, title in hwnd_list 
+            if title.lower().startswith(window_name.lower()) and title.lower() != window_name.lower()
+        ]
     except Exception as e:
         logging.error(f"Error occurred during filtering: {e}")
         hwnd_list_filtered = []
@@ -229,14 +252,14 @@ def show_button_(coords, hwnd):
 
     Note:
     - This function uses a global variable `button_window_var` to keep track of the button window instance.
-    - If the button window is not already displayed, it creates a new instance of `ButtonWindow` and shows it.
+    - If the button window is not already displayed, it creates a new instance of `Button_result` and shows it.
     - If the button window is already displayed, it updates its position, brings it to the front, and updates the associated hwnd.
     """
 
     global button_window_var
 
     if not button_window_var:
-        button_window_var = ButtonWindow(coords, hwnd)
+        button_window_var = Button_result(coords, hwnd)
         button_window_var.show()
     else:
         button_window_var.setGeometry(QRect(coords[0], coords[1], 100, 100))
@@ -247,7 +270,7 @@ def show_button_(coords, hwnd):
 def hide_button_():
     """
     Hides the button window if it is currently displayed.
-    Closes the window and releases the global reference to this instance of ButtonWindow.
+    Closes the window and releases the global reference to this instance of Button_result.
     """
 
     global button_window_var
@@ -378,9 +401,9 @@ def calculate_percentage_and_position_(x, y, width):
 
     return x, y
 
-class ButtonWindow(QWidget):
+class Button_result(QWidget):
     def __init__(self, coords, hwnd, parent=None):
-        super(ButtonWindow, self).__init__(parent)
+        super(Button_result, self).__init__(parent)
         self.hwnd = hwnd
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
@@ -424,9 +447,37 @@ def main():
             logging.debug(f"Winamax HWNDs: {wmx_hwnd_list}")
 
             # Get the HWNDs with the specified window title
-            wmx_hwnd_list_filtered = filter_hwnd_list_(wmx_hwnd_list, winamax_window_name)
+            wmx_hwnd_list_filtered = filter_hwnd_list_main_winamax_window_(wmx_hwnd_list, winamax_window_name)
 
-            # Check if the filtered HWNDs is found
+            # Get the HWNDs of all Winamax tables
+            wmx_hwnd_table_list = filter_hwnd_list_winamax_tables_(wmx_hwnd_list, winamax_window_name)
+            logging.info(f"Tables HWNDs: {wmx_hwnd_table_list}")
+
+            # Check if a table is found
+            if wmx_hwnd_table_list:
+                for hwnd, title in wmx_hwnd_table_list:
+                    logging.info(f"Table found: {title} (HWND: {hwnd})")
+
+                    # Get the position and dimensions of the window
+                    x, y, width, height = get_window_position_and_dimensions_(hwnd)
+                    logging.info(f"Window position: ({x}, {y}), dimensions: {width}x{height}")
+
+                    # Check if the window is minimized
+                    if x == -32000 and y == -32000:
+                        logging.info("Window is minimized")
+                    else:
+                        # Store the coordinates of the window
+                        logging.info("Window is visible")
+
+                # Check if the window is minimized
+                if x == -32000 and y == -32000:
+                    string_found = False
+                    logging.debug("Window is minimized")
+                else:
+                    # Store the coordinates of the window
+                    logging.debug("Window is visible")
+
+            # Check if the filtered Window HWND is found
             if wmx_hwnd_list_filtered:
                 # Get the first HWND and title from the filtered list
                 hwnd, title = wmx_hwnd_list_filtered[0]
@@ -472,7 +523,7 @@ def main():
         app.processEvents()
 
         # Wait for 1 second before checking again
-        # time.sleep(0.01)
+        time.sleep(0.5)
 
 if __name__ == "__main__":
     main()
