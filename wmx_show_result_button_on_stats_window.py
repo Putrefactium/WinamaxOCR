@@ -1,5 +1,6 @@
 import psutil
 import win32gui
+import win32con
 import win32process
 import time
 import locale
@@ -16,6 +17,7 @@ import threading
 import queue
 import keyboard
 import logging
+import re
 
 # Global variables #
 
@@ -47,10 +49,15 @@ logging.basicConfig(
 # Path to the Tesseract executable
 pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 
-# Path to the folder where the captures will be saved
-capture_folder = "captures"
-if not os.path.exists(capture_folder):
-    os.makedirs(capture_folder)
+# Path to the folder where the Sessions captures will be saved
+stat_folder = "Statistiques Sessions"
+if not os.path.exists(stat_folder):
+    os.makedirs(stat_folder)
+
+# Path to the folder where the Table captures will be saved
+tables_folder = "Résultat Tables"
+if not os.path.exists(tables_folder):
+    os.makedirs(tables_folder)
 
 def check_wmx_proc_alive_():
     """
@@ -177,6 +184,88 @@ def get_window_position_and_dimensions_(hwnd):
 
     return x, y, width, height
 
+def get_center_rectangle(window_width, window_height):
+    """
+    Calculate the coordinates of the rectangle centered within a table window.
+    The size of the rectangle depends on the width of the main window and scales gradually until a maximum size is reached.
+    
+    Parameters:
+    - window_width (int): The width of the main window.
+    - window_height (int): The height of the main window.
+    
+    Returns:
+    - tuple: The coordinates of the rectangle (left, top, right, bottom).
+    """
+
+    # Define the minimum and maximum sizes of the rectangle
+    min_rect_width, min_rect_height = 380, 190
+    max_rect_width, max_rect_height = 590, 280
+    
+    # Determine the size of the rectangle based on the width of the main window
+    if window_width <= 800:
+        rect_width, rect_height = min_rect_width, min_rect_height
+    elif window_width <= 1220:
+        # Scale the rectangle size gradually
+        scale_factor = (window_width - 800) / (1220 - 800)
+        rect_width = min_rect_width + int(scale_factor * (max_rect_width - min_rect_width))
+        rect_height = min_rect_height + int(scale_factor * (max_rect_height - min_rect_height))
+    else:
+        rect_width, rect_height = max_rect_width, max_rect_height
+    
+    # Calculate the coordinates of the rectangle to center it within the main window
+    left = (window_width - rect_width) // 2
+    top = (window_height - rect_height) // 2
+    right = left + rect_width
+    bottom = top + rect_height 
+    
+    return (left, top, right, bottom)
+
+def is_window_visible_(hwnd):
+    """
+    Check if a window is visible on the screen and not obscured by another window.
+    Parameters:
+    - hwnd (int): The handle of the window.
+    Returns:
+    - bool: True if the window is visible on the screen and not obscured, False otherwise.
+    """
+
+    # Get the window title
+    title = win32gui.GetWindowText(hwnd)
+    logging.debug(f"Checking visibility for window: {hwnd}, Title: {title}")
+    
+    if not win32gui.IsWindowVisible(hwnd):
+        logging.debug(f"Window {title} is not visible.")
+        return False
+    
+    if win32gui.IsIconic(hwnd):
+        logging.debug(f"Window {title} is minimized.")
+        return False
+    
+    rect = win32gui.GetWindowRect(hwnd) # (left, top, right, bottom)
+    logging.debug(f"Window {title} rect: {rect}")
+
+    if rect[0] == -32000 or rect[1] == -32000: # Check if the window is minimized
+        logging.debug(f"Window {title} is minimized.")
+        return False
+
+    # Check if the window is obscured by another window
+    top_hwnd = win32gui.GetTopWindow(None)
+    while top_hwnd:
+        top_title = win32gui.GetWindowText(top_hwnd)
+        if top_hwnd == hwnd:
+            logging.debug(f"Window {title} is the top window.") # The window is the top window
+            return True
+        if win32gui.IsWindowVisible(top_hwnd): # Check if the window is visible
+            top_rect = win32gui.GetWindowRect(top_hwnd)
+            if (rect[0] < top_rect[2] and rect[2] > top_rect[0] and
+                rect[1] < top_rect[3] and rect[3] > top_rect[1]):
+                logging.info(f"Window {hwnd} (Title: {title}) is obscured by window {top_hwnd} (Title: {top_title}).")
+                return False
+        top_hwnd = win32gui.GetWindow(top_hwnd, win32con.GW_HWNDNEXT)
+    
+    logging.debug(f"Window {title} is visible and not obscured.")
+    return True
+
 def capture_window_region_(x, y):
     """
     Captures the region of the window specified by its hwnd and coordinates.
@@ -280,10 +369,10 @@ def hide_button_():
         button_window_var = None
         logging.debug("Button window closed.")
 
-def capture_image_and_save_(hwnd):
+def save_result_screenshot_(hwnd):
     """
-    Capture an image of the window specified by `hwnd` via the screen_session_result_() function, save the image in a JPG file with a name based on the timestamp,
-    and display a confirmation or error message.
+    Capture an image of the window specified by `hwnd` via the screen_session_result_() function, save the image in a JPG file, 
+    in the Result Folder, with a name based on the timestamp, and display a confirmation or error message.
 
     :param hwnd: Handle of the window whose image needs to be captured
     """
@@ -294,7 +383,7 @@ def capture_image_and_save_(hwnd):
         new_month_folder = current_month_()
         # Ensure the folder name is correctly encoded
         new_month_folder = new_month_folder.encode('utf-8').decode('utf-8')
-        full_path = os.path.join(capture_folder, new_month_folder)
+        full_path = os.path.join(stat_folder, new_month_folder)
         logging.info(f"Saving the image in the folder: {full_path}")
 
         if not os.path.exists(full_path):
@@ -307,6 +396,44 @@ def capture_image_and_save_(hwnd):
         logging.info(f"Image successfully saved: {file_path}")
     else:
          logging.info("Error capturing the image.")
+
+def save_table_screenshot_(hwnd):
+    """
+    Capture an image of the table specified by `hwnd` via the screen_table_result_() function, save the image in a JPG file, 
+    in the Table Result Folder, with a name based on the timestamp, and display a confirmation or error message.
+
+    :param hwnd: Handle of the window whose image needs to be captured
+    """
+
+    result_jpg = screen_table_result_(hwnd)
+
+    if result_jpg:
+        new_month_folder = current_month_()
+        # Ensure the folder name is correctly encoded
+        new_month_folder = new_month_folder.encode('utf-8').decode('utf-8')
+        full_path = os.path.join(tables_folder, new_month_folder)
+        logging.info(f"Saving the image in the folder: {full_path}")
+
+        if not os.path.exists(full_path):
+            logging.info(f"Creating the folder: {full_path}")
+            os.makedirs(full_path)
+
+        # Get the window title
+        window_title = win32gui.GetWindowText(hwnd)
+        # Remove "winamax" from the window title
+        window_title = window_title.replace("Winamax", "").strip()
+        # Remove everything between parentheses, including the parentheses themselves
+        window_title = re.sub(r'\(.*?\)', '', window_title).strip()
+        logging.info(f"Window title: {window_title}")
+        # Sanitize the window title to be used in the file name
+        sanitized_title = "".join(c for c in window_title if c.isalnum() or c in (' ', '_')).rstrip()
+
+        timestamp = datetime.now().strftime("%d_%m_%Y")
+        file_path = os.path.join(full_path, f"{timestamp}_{sanitized_title}.jpg")
+        result_jpg.save(file_path, "JPEG")
+        logging.info(f"Image successfully saved: {file_path}")
+    else:
+        logging.info("Error capturing the image.")
 
 def current_month_():
     """
@@ -379,6 +506,48 @@ def screen_session_result_(hwnd):
         logging.debug(f"Error capturing the window with HWND {hwnd}: {e}")
         return None
 
+def screen_table_result_(hwnd):
+    """
+    Capture a specific part of the table identified by `hwnd` and return the captured image.
+    The dimension corresponds to the rectangle composing the Result part of the Winamax table.
+
+    :param hwnd: Handle of the window (HWND) to capture
+    :return: PIL image of the captured part of the window, or None in case of error
+    """
+
+    logging.debug(f"Attempting to capture for the Result of the table with HWND: {hwnd}")
+
+    try:
+        x, y, width, height = get_window_position_and_dimensions_(hwnd) # Get the position and dimensions of the table window
+        rectangle_coord = get_center_rectangle(width, height) # Get the coordinates of the result rectangle
+        logging.info(f"Table position: ({x}, {y}), dimensions: {width}x{height}")
+        logging.info(f"Result rectangle: ({rectangle_coord[0]}, {rectangle_coord[1]}, dimensions: {rectangle_coord[2] - rectangle_coord[0]}x{rectangle_coord[3] - rectangle_coord[1]}")
+        
+
+        capture_window = (
+            x + rectangle_coord[0],  # Left side of the window + Left side of the rectangle
+            y + rectangle_coord[1],  # Top side of the window + Top side of the rectangle
+            x + rectangle_coord[2],  # Right side of the window + Right side of the rectangle
+            y + rectangle_coord[3], # Bottom side of the window + Bottom side of the rectangle
+        )
+
+        logging.info(f"Capture rectangle: ({capture_window[0]}, {capture_window[1]}, {capture_window[2]}, {capture_window[3]})")
+
+        if capture_window[0] >= capture_window[2] or capture_window[1] >= capture_window[3]:
+            logging.debug(f"The adjusted coordinates of the capture rectangle are invalid: {capture_window}")
+            return None
+
+        with mss.mss() as sct:
+            img = sct.grab(capture_window)
+            img_pil = Image.frombytes('RGB', img.size, img.rgb)        
+            logging.debug(f"Image capture successful for the result of the table with HWND: {hwnd}")
+
+        return img_pil
+    
+    except Exception as e:
+        logging.debug(f"Error capturing the window with HWND {hwnd}: {e}")
+        return None
+
 def calculate_percentage_and_position_(x, y, width):
     """
     Calculate the percentage of the width for the button position and the position in pixels.
@@ -421,7 +590,7 @@ class Button_result(QWidget):
 
     def on_button_click(self):
         logging.info("Button clicked.")
-        capture_image_and_save_(self.hwnd)
+        save_result_screenshot_(self.hwnd)
 
 def main():
 
@@ -446,36 +615,10 @@ def main():
             wmx_hwnd_list = get_wmx_hwnd_and_title_(wmx_pids)
             logging.debug(f"Winamax HWNDs: {wmx_hwnd_list}")
 
-            # Get the HWNDs with the specified window title
+            ### PART 1: Main Winamax Stats window : Drawing button and Screenhot of Results ###
+
+            # Get the HWND of main launcher window title
             wmx_hwnd_list_filtered = filter_hwnd_list_main_winamax_window_(wmx_hwnd_list, winamax_window_name)
-
-            # Get the HWNDs of all Winamax tables
-            wmx_hwnd_table_list = filter_hwnd_list_winamax_tables_(wmx_hwnd_list, winamax_window_name)
-            logging.info(f"Tables HWNDs: {wmx_hwnd_table_list}")
-
-            # Check if a table is found
-            if wmx_hwnd_table_list:
-                for hwnd, title in wmx_hwnd_table_list:
-                    logging.info(f"Table found: {title} (HWND: {hwnd})")
-
-                    # Get the position and dimensions of the window
-                    x, y, width, height = get_window_position_and_dimensions_(hwnd)
-                    logging.info(f"Window position: ({x}, {y}), dimensions: {width}x{height}")
-
-                    # Check if the window is minimized
-                    if x == -32000 and y == -32000:
-                        logging.info("Window is minimized")
-                    else:
-                        # Store the coordinates of the window
-                        logging.info("Window is visible")
-
-                # Check if the window is minimized
-                if x == -32000 and y == -32000:
-                    string_found = False
-                    logging.debug("Window is minimized")
-                else:
-                    # Store the coordinates of the window
-                    logging.debug("Window is visible")
 
             # Check if the filtered Window HWND is found
             if wmx_hwnd_list_filtered:
@@ -494,8 +637,7 @@ def main():
                     logging.debug("Window is minimized")
                 else:
                     # Store the coordinates of the window
-                    x_coord_window = x
-                    y_coord_window = y
+                    x_coord_window, y_coord_window = x, y
                     
                     # Draw a button on the screen if string_found is True, given by OCR thread
                     if string_found:
@@ -509,7 +651,44 @@ def main():
                         hide_button_()
 
                     # Réinitialiser l'état des threads
-                    threads_done.clear()     
+                    threads_done.clear()   
+
+                    ### END OF PART 1 ###
+
+                    ### PART 2: Winamax Tables detection ###
+
+            # Get the HWNDs of all Winamax tables
+            wmx_hwnd_table_list = filter_hwnd_list_winamax_tables_(wmx_hwnd_list, winamax_window_name)
+            logging.debug(f"Tables HWNDs and Title: {wmx_hwnd_table_list}")
+
+            # If there's a list of tables
+            if wmx_hwnd_table_list:
+                # Filter the list to only include visible tables
+                visible_windows = [(hwnd, title) for hwnd, title in wmx_hwnd_table_list if is_window_visible_(hwnd)]
+                logging.debug(f"Visible tables: {len(visible_windows)}")
+
+                for hwnd, title in visible_windows:
+                    # Get the position and dimensions of the window
+                    x, y, width, height = get_window_position_and_dimensions_(hwnd)
+                    rectangle_coord = get_center_rectangle(width, height)
+                    logging.debug(f"Table {title} position: ({x}, {y}), dimensions: {width}x{height}")
+                    logging.debug(f"Result rectangle: ({rectangle_coord[0]}, {rectangle_coord[1]}, {rectangle_coord[2]}, {rectangle_coord[3]})")
+
+                    ### TEST ONLY ###
+                    ### WE TEST THE TABLE SCREENSHOT FUNCTION ###
+                    ### TO BE REMOVED IN PRODUCTION ###
+                    ### FROM HERE WE NEED TO LAUNCH PIXEL COLOR CHECK ON EACH VISIBLE TABLE TO FIND THE RESULT WINDOW ###
+                    ### IF THE PIXEL COLOR IS THE SAME AS THE RESULT WINDOW, WE DRAW A BUTTON AT A SPECIFIC COORD GIVEN BY TABLE COORD AND SIZE ###
+                    ### WHEN THE BUTTON IS CLICKED, WE SAVE THE SCREENSHOT OF THE RESULT WINDOW ###
+                    
+                    save_table_screenshot_(hwnd) # Save the screenshot of the table
+                    logging.debug(f"Saving the screenshot of the table {title}")
+
+                    ### TEST ONLY ###
+
+                    ### END OF PART 2 ###
+
+                    ### PART 3: Thread Management for Main Winamax Detection, Results of Tables Detection and Exit main loop ###
                     
         if current_timestamp - start_ocr_timestamp >= (search_interval_OCR):
             logging.debug("Boucle OCR thread relancé")
@@ -523,7 +702,7 @@ def main():
         app.processEvents()
 
         # Wait for 1 second before checking again
-        time.sleep(0.5)
+        time.sleep(2)
 
 if __name__ == "__main__":
     main()
