@@ -1,6 +1,7 @@
 import psutil
 import win32gui
 import win32con
+import win32api
 import win32process
 import time
 import locale
@@ -12,7 +13,7 @@ import mss
 import pygetwindow as gw
 from PyQt5.QtWidgets import QApplication, QLabel, QPushButton, QWidget
 from PyQt5.QtGui import QPixmap
-from PyQt5.QtCore import Qt, QRect
+from PyQt5.QtCore import Qt, QRect, QTimer
 import threading
 import queue
 import keyboard
@@ -29,12 +30,15 @@ button_image_path = r"Assets\DLBTN.png"
 x_coord_window = 0
 y_coord_window = 0
 string_found = None
-button_window_var = None
-start_ocr_timestamp = 0
+button_stat_window_var = None
+button_table_window_var = []
+button_instances = {}
+start_ocr_timestamp = time.time()
 search_interval_OCR = 1/2 # Interval in seconds to start the OCR thread
+result_frame_hex_color = "#232323" # Hex color code of the result frame in Winamax
 
 threads_done = threading.Event()
-result_queue = queue.Queue() # Queue to share results between threads and the rest of the script
+input_queue = queue.Queue() # Queue for storing inputs
 
 # Enable verbose logging
 VERBOSE_LOGGING = False
@@ -126,6 +130,17 @@ def get_wmx_hwnd_and_title_(pids):
     win32gui.EnumWindows(enum_window_callback, None)
 
     return hwnd_list
+
+def get_explorer_pid():
+    """
+    Get the PID of explorer.exe.
+    Returns:
+    - int: The PID of explorer.exe, or None if not found.
+    """
+    for proc in psutil.process_iter(['pid', 'name']):
+        if proc.info['name'].lower() == 'explorer.exe':
+            return proc.info['pid']
+    return None
 
 def filter_hwnd_list_main_winamax_window_(hwnd_list, window_name):
     """
@@ -220,6 +235,19 @@ def get_center_rectangle(window_width, window_height):
     
     return (left, top, right, bottom)
 
+def is_full_screen(hwnd):
+    """
+    Check if the window is in full screen mode.
+    Parameters:
+    - hwnd (int): The handle of the window.
+    Returns:
+    - bool: True if the window is in full screen mode, False otherwise.
+    """
+    screen_width = win32api.GetSystemMetrics(win32con.SM_CXSCREEN)
+    screen_height = win32api.GetSystemMetrics(win32con.SM_CYSCREEN)
+    rect = win32gui.GetWindowRect(hwnd)
+    return rect[0] == 0 and rect[1] == 0 and rect[2] == screen_width and rect[3] == screen_height
+
 def is_window_visible_(hwnd):
     """
     Check if a window is visible on the screen and not obscured by another window.
@@ -228,6 +256,11 @@ def is_window_visible_(hwnd):
     Returns:
     - bool: True if the window is visible on the screen and not obscured, False otherwise.
     """
+
+    global button_table_window_var
+
+    # Get the PID of explorer.exe
+    explorer_pid = get_explorer_pid()
 
     # Get the window title
     title = win32gui.GetWindowText(hwnd)
@@ -247,6 +280,11 @@ def is_window_visible_(hwnd):
     if rect[0] == -32000 or rect[1] == -32000: # Check if the window is minimized
         logging.debug(f"Window {title} is minimized.")
         return False
+    
+    # Check if the window is in full screen mode
+    full_screen = is_full_screen(hwnd)
+    if full_screen:
+        logging.debug(f"Window {title} is in full screen mode.")
 
     # Check if the window is obscured by another window
     top_hwnd = win32gui.GetTopWindow(None)
@@ -255,12 +293,23 @@ def is_window_visible_(hwnd):
         if top_hwnd == hwnd:
             logging.debug(f"Window {title} is the top window.") # The window is the top window
             return True
-        if win32gui.IsWindowVisible(top_hwnd): # Check if the window is visible
+        elif top_title == "python": # Check if the window overlapping is a python frame ### FIXME: Find a better way to ignore python frames
+            logging.debug(f"Ignoring invisible python window: {top_hwnd}, Title: {top_title}")
+        elif full_screen and not win32gui.IsWindowVisible(top_hwnd): # Ignore invisible windows when in full screen
+            logging.debug(f"Ignoring invisible window: {top_hwnd}, Title: {top_title}")
+        elif win32gui.IsWindowVisible(top_hwnd): # Check if the window is visible
             top_rect = win32gui.GetWindowRect(top_hwnd)
             if (rect[0] < top_rect[2] and rect[2] > top_rect[0] and
                 rect[1] < top_rect[3] and rect[3] > top_rect[1]):
-                logging.info(f"Window {hwnd} (Title: {title}) is obscured by window {top_hwnd} (Title: {top_title}).")
-                return False
+                # Get the PID of the overlapping window
+                _, pid = win32process.GetWindowThreadProcessId(top_hwnd)
+                # Ignore explorer.exe windows (it's the taskbar overlapping our table)
+                if pid == explorer_pid:
+                    logging.debug(f"Ignoring explorer.exe window: {top_hwnd}, PID: {pid}")
+                    return True
+                else:
+                    logging.debug(f"Window {hwnd} (Title: {title}) is obscured by window {top_hwnd} (Title: {top_title}), PID: {pid}.")
+                    return False
         top_hwnd = win32gui.GetWindow(top_hwnd, win32con.GW_HWNDNEXT)
     
     logging.debug(f"Window {title} is visible and not obscured.")
@@ -330,7 +379,7 @@ def start_OCR_thread_():
 
     ocr_thread.start()
 
-def show_button_(coords, hwnd):
+def show_stat_button_(coords, hwnd):
     """
     Displays a button window at the specified coordinates and associates it with the given window handle (hwnd).
     If the button window is already displayed, it updates its position and brings it to the front.
@@ -340,33 +389,72 @@ def show_button_(coords, hwnd):
     - hwnd (int): The window handle (hwnd) of the window to associate with the button.
 
     Note:
-    - This function uses a global variable `button_window_var` to keep track of the button window instance.
+    - This function uses a global variable `button_stat_window_var` to keep track of the button window instance.
     - If the button window is not already displayed, it creates a new instance of `Button_result` and shows it.
     - If the button window is already displayed, it updates its position, brings it to the front, and updates the associated hwnd.
     """
 
-    global button_window_var
+    global button_stat_window_var
 
-    if not button_window_var:
-        button_window_var = Button_result(coords, hwnd)
-        button_window_var.show()
+    if not button_stat_window_var:
+        button_stat_window_var = Button_result(coords, hwnd)
+        button_stat_window_var.show()
     else:
-        button_window_var.setGeometry(QRect(coords[0], coords[1], 100, 100))
-        button_window_var.raise_()
-        button_window_var.activateWindow()
-        button_window_var.hwnd = hwnd # Update the associated hwnd
+        button_stat_window_var.setGeometry(QRect(coords[0], coords[1], 100, 100))
+        button_stat_window_var.hwnd = hwnd # Update the associated hwnd
 
-def hide_button_():
+def show_table_button_(coords, hwnd):
+    """
+    Displays a button window at the specified coordinates and associates it with the given window handle (hwnd).
+    If the button window is already displayed, it updates its position and brings it to the front.
+
+    Parameters:
+    - coords (tuple): A tuple containing the x and y coordinates where the button should be displayed.
+    - hwnd (int): The window handle (hwnd) of the window to associate with the button.
+
+    Note:
+    - This function uses a global variable `button_table_window_var` to keep track of the button window instance.
+    - If the button window is not already displayed, it creates a new instance of `Button_table` and shows it.
+    - If the button window is already displayed, it updates its position, brings it to the front, and updates the associated hwnd.
+    """
+
+    global button_table_window_var
+
+    if not button_table_window_var:
+        button_table_window_var = Button_table(coords, hwnd)
+        logging.info(f"Table button window created for HWND: {hwnd}")
+        button_table_window_var.show()
+
+    else:
+        button_table_window_var.setGeometry(QRect(coords[0], coords[1], 100, 100))
+        button_table_window_var.hwnd = hwnd # Update the associated hwnd
+
+def hide_stat_button_():
     """
     Hides the button window if it is currently displayed.
     Closes the window and releases the global reference to this instance of Button_result.
     """
 
-    global button_window_var
+    global button_stat_window_var
 
-    if button_window_var:
-        button_window_var.close()
-        button_window_var = None
+    if button_stat_window_var:
+        button_stat_window_var.close()
+        button_stat_window_var = None
+
+        logging.debug("Button window closed.")
+
+def hide_table_button_():
+    """
+    Hides the button window if it is currently displayed.
+    Closes the window and releases the global reference to this instance of Button_table.
+    """
+
+    global button_table_window_var
+
+    if button_table_window_var:
+        button_table_window_var.close()
+        button_table_window_var = None
+
         logging.debug("Button window closed.")
 
 def save_result_screenshot_(hwnd):
@@ -384,7 +472,7 @@ def save_result_screenshot_(hwnd):
         # Ensure the folder name is correctly encoded
         new_month_folder = new_month_folder.encode('utf-8').decode('utf-8')
         full_path = os.path.join(stat_folder, new_month_folder)
-        logging.info(f"Saving the image in the folder: {full_path}")
+        logging.debug(f"Saving the image in the folder: {full_path}")
 
         if not os.path.exists(full_path):
             logging.info(f"Creating the folder: {full_path}")
@@ -395,7 +483,7 @@ def save_result_screenshot_(hwnd):
         result_jpg.save(file_path, "JPEG")
         logging.info(f"Image successfully saved: {file_path}")
     else:
-         logging.info("Error capturing the image.")
+         logging.debug("Error capturing the image.")
 
 def save_table_screenshot_(hwnd):
     """
@@ -405,6 +493,10 @@ def save_table_screenshot_(hwnd):
     :param hwnd: Handle of the window whose image needs to be captured
     """
 
+    global button_stat_window_var
+
+    hide_table_button_() # Hide the button window before capturing the table result, will reopen once the main loop is done
+
     result_jpg = screen_table_result_(hwnd)
 
     if result_jpg:
@@ -412,7 +504,7 @@ def save_table_screenshot_(hwnd):
         # Ensure the folder name is correctly encoded
         new_month_folder = new_month_folder.encode('utf-8').decode('utf-8')
         full_path = os.path.join(tables_folder, new_month_folder)
-        logging.info(f"Saving the image in the folder: {full_path}")
+        logging.debug(f"Saving the image in the folder: {full_path}")
 
         if not os.path.exists(full_path):
             logging.info(f"Creating the folder: {full_path}")
@@ -424,7 +516,7 @@ def save_table_screenshot_(hwnd):
         window_title = window_title.replace("Winamax", "").strip()
         # Remove everything between parentheses, including the parentheses themselves
         window_title = re.sub(r'\(.*?\)', '', window_title).strip()
-        logging.info(f"Window title: {window_title}")
+        logging.debug(f"Window title: {window_title}")
         # Sanitize the window title to be used in the file name
         sanitized_title = "".join(c for c in window_title if c.isalnum() or c in (' ', '_')).rstrip()
 
@@ -520,8 +612,8 @@ def screen_table_result_(hwnd):
     try:
         x, y, width, height = get_window_position_and_dimensions_(hwnd) # Get the position and dimensions of the table window
         rectangle_coord = get_center_rectangle(width, height) # Get the coordinates of the result rectangle
-        logging.info(f"Table position: ({x}, {y}), dimensions: {width}x{height}")
-        logging.info(f"Result rectangle: ({rectangle_coord[0]}, {rectangle_coord[1]}, dimensions: {rectangle_coord[2] - rectangle_coord[0]}x{rectangle_coord[3] - rectangle_coord[1]}")
+        logging.debug(f"Table position: ({x}, {y}), dimensions: {width}x{height}")
+        logging.debug(f"Result rectangle: ({rectangle_coord[0]}, {rectangle_coord[1]}, dimensions: {rectangle_coord[2] - rectangle_coord[0]}x{rectangle_coord[3] - rectangle_coord[1]}")
         
 
         capture_window = (
@@ -531,7 +623,7 @@ def screen_table_result_(hwnd):
             y + rectangle_coord[3], # Bottom side of the window + Bottom side of the rectangle
         )
 
-        logging.info(f"Capture rectangle: ({capture_window[0]}, {capture_window[1]}, {capture_window[2]}, {capture_window[3]})")
+        logging.debug(f"Capture rectangle: ({capture_window[0]}, {capture_window[1]}, {capture_window[2]}, {capture_window[3]})")
 
         if capture_window[0] >= capture_window[2] or capture_window[1] >= capture_window[3]:
             logging.debug(f"The adjusted coordinates of the capture rectangle are invalid: {capture_window}")
@@ -548,7 +640,7 @@ def screen_table_result_(hwnd):
         logging.debug(f"Error capturing the window with HWND {hwnd}: {e}")
         return None
 
-def calculate_percentage_and_position_(x, y, width):
+def calculate_stat_btn_pos_(x, y, width):
     """
     Calculate the percentage of the width for the button position and the position in pixels.
     :param x: X coordinate of the top-left corner of the window
@@ -570,6 +662,41 @@ def calculate_percentage_and_position_(x, y, width):
 
     return x, y
 
+def calculate_table_btn_pos_(x, y, hwnd):
+    
+    x, y, width, height = get_window_position_and_dimensions_(hwnd) # Get the position and dimensions of the table window
+    result_rect = get_center_rectangle(width, height) # Get the coordinates of the result rectangle
+
+    x = x - result_rect[0] + (0.95*width) # Offset to ensure table button is in the top left result rectangle
+    y = y + result_rect[1]  # Offset to ensure table button is in the top left result rectangle
+
+    logging.debug(f"Table:{hwnd}, Button coordinates: ({x}, {y})")
+
+    return int(x), int(y)
+
+def check_table_pixel_color_(x, y):
+    """
+    Check the pixel color at the specified coordinates (x, y) and return True if the color is #232323, False otherwise.
+    This function is used to detect the presence of the result frame in a table window.
+    Hex color code: result_frame_hex_color var : #232323 is the color of the table result window in Winamax.
+    :param x: X coordinate of the pixel
+    :param y: Y coordinate of the pixel
+    :return: bool indicating if the pixel color is == to result_frame_hex_color var
+    """
+
+    global result_frame_hex_color
+
+    with mss.mss() as sct:
+        img = sct.grab({"left": x, "top": y, "width": 1, "height": 1})
+        r, g, b = img.pixel(0, 0)
+
+        logging.debug(f"Pixel color at ({x}, {y}): R={r}, G={g}, B={b}")
+
+    hex_color = f"#{r:02x}{g:02x}{b:02x}"
+    logging.debug(f"Hex color at ({x}, {y}): {hex_color}")
+
+    return hex_color == result_frame_hex_color
+
 class Button_result(QWidget):
     def __init__(self, coords, hwnd, parent=None):
         super(Button_result, self).__init__(parent)
@@ -589,18 +716,44 @@ class Button_result(QWidget):
         self.button.clicked.connect(self.on_button_click)
 
     def on_button_click(self):
-        logging.info("Button clicked.")
+        logging.debug("Button clicked.")
         save_result_screenshot_(self.hwnd)
 
+class Button_table(QWidget):
+    def __init__(self, coords, hwnd, parent=None):
+        super(Button_table, self).__init__(parent)
+        self.hwnd = hwnd
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setGeometry(QRect(coords[0], coords[1], 100, 100))
+
+        self.label = QLabel(self)
+        self.label.setPixmap(QPixmap(button_image_path))
+        self.label.setGeometry(0, 0, 100, 100)
+
+        self.button = QPushButton(self)
+        self.button.setGeometry(0, 0, 100, 100)
+        self.button.setFlat(True)
+        self.button.setStyleSheet("background: transparent;")
+        self.button.clicked.connect(self.on_button_click)
+
+    def on_button_click(self):
+        logging.debug("Button clicked.")
+        save_table_screenshot_(self.hwnd)
 def main():
 
     global x_coord_window, y_coord_window, start_ocr_timestamp, string_found
 
     app = QApplication([]) # Create a QApplication instance
 
-    while True:      
+    # # Timer for periodic tasks
+    # timer = QTimer()
+    # timer.timeout.connect(periodic_tasks)
+    # timer.start(20)  # 20 ms interval
+
+    while True:       
         # Get the current timestamp
-        current_timestamp = time.time() 
+        current_timestamp = time.time()
 
         # Call the function to check for the "winamax.exe" process
         found_wmx_proc = check_wmx_proc_alive_()
@@ -633,7 +786,7 @@ def main():
                 # Check if the window is minimized
                 if x == -32000 and y == -32000:
                     string_found = False
-                    hide_button_()
+                    hide_stat_button_()
                     logging.debug("Window is minimized")
                 else:
                     # Store the coordinates of the window
@@ -642,20 +795,20 @@ def main():
                     # Draw a button on the screen if string_found is True, given by OCR thread
                     if string_found:
                         logging.debug("String found, drawing button on screen.")
-                        button_pos_x, button_pos_y = calculate_percentage_and_position_(x, y, width)
+                        button_pos_x, button_pos_y = calculate_stat_btn_pos_(x, y, width)
                         logging.debug(f"Button position: ({button_pos_x}, {button_pos_y}), hwnd: {hwnd}")
-                        show_button_((button_pos_x, button_pos_y), hwnd)
+                        show_stat_button_((button_pos_x, button_pos_y), hwnd)
                         logging.debug(f"Affichage du bouton à la position : ({button_pos_x}, {button_pos_y}")
                     else:
                         logging.debug("String not found.")
-                        hide_button_()
+                        hide_stat_button_()
 
                     # Réinitialiser l'état des threads
                     threads_done.clear()   
 
-                    ### END OF PART 1 ###
+                ### END OF PART 1 ###
 
-                    ### PART 2: Winamax Tables detection ###
+                ### PART 2: Winamax Tables detection ###
 
             # Get the HWNDs of all Winamax tables
             wmx_hwnd_table_list = filter_hwnd_list_winamax_tables_(wmx_hwnd_list, winamax_window_name)
@@ -667,12 +820,31 @@ def main():
                 visible_windows = [(hwnd, title) for hwnd, title in wmx_hwnd_table_list if is_window_visible_(hwnd)]
                 logging.debug(f"Visible tables: {len(visible_windows)}")
 
+                # Get the position and dimensions of each visible table
                 for hwnd, title in visible_windows:
-                    # Get the position and dimensions of the window
                     x, y, width, height = get_window_position_and_dimensions_(hwnd)
-                    rectangle_coord = get_center_rectangle(width, height)
-                    logging.debug(f"Table {title} position: ({x}, {y}), dimensions: {width}x{height}")
-                    logging.debug(f"Result rectangle: ({rectangle_coord[0]}, {rectangle_coord[1]}, {rectangle_coord[2]}, {rectangle_coord[3]})")
+                    logging.debug(f"Table {title} position: ({x}, {y}), dimensions: {width}x{height}, HWND: {hwnd}")
+                    # We load the coordinates of the theorical rectangle within the table window 
+                    rectangle_coord = get_center_rectangle(width, height) 
+
+                    x_pixel_check_coord = x + rectangle_coord[0] + 20 # Offset of 20 pixels on the left side of the rectangle to ensure we're in the rectangle
+                    y_pixel_check_coord = y + rectangle_coord[1] + 20 # Offset of 20 pixels on the top side of the rectangle to ensure we're in the rectangle
+
+                    # Check the pixel color at the specified coordinates
+                    table_result_displayed = check_table_pixel_color_(x_pixel_check_coord, y_pixel_check_coord)
+                    if table_result_displayed:
+                        logging.debug(f"Result frame on screen : {table_result_displayed} / on table {title}")
+                    else:
+                        logging.debug(f"Result frame not displayed on table {title}")
+                        
+                    # If the result frame is displayed, draw a button on the screen
+                    if table_result_displayed:
+                            button_pos_x, button_pos_y = calculate_table_btn_pos_(x, y, hwnd)
+                            show_table_button_((button_pos_x, button_pos_y), hwnd)
+                            logging.debug(f"Draw Button at position: ({button_pos_x}, {button_pos_y}), hwnd: {hwnd}")
+                    else:
+                        logging.info("Result frame not displayed.")
+                        # hide_table_button_()
 
                     ### TEST ONLY ###
                     ### WE TEST THE TABLE SCREENSHOT FUNCTION ###
@@ -681,8 +853,8 @@ def main():
                     ### IF THE PIXEL COLOR IS THE SAME AS THE RESULT WINDOW, WE DRAW A BUTTON AT A SPECIFIC COORD GIVEN BY TABLE COORD AND SIZE ###
                     ### WHEN THE BUTTON IS CLICKED, WE SAVE THE SCREENSHOT OF THE RESULT WINDOW ###
                     
-                    save_table_screenshot_(hwnd) # Save the screenshot of the table
-                    logging.debug(f"Saving the screenshot of the table {title}")
+                    # save_table_screenshot_(hwnd) # Save the screenshot of the table
+                    # logging.debug(f"Saving the screenshot of the table {title}")
 
                     ### TEST ONLY ###
 
@@ -690,19 +862,23 @@ def main():
 
                     ### PART 3: Thread Management for Main Winamax Detection, Results of Tables Detection and Exit main loop ###
                     
-        if current_timestamp - start_ocr_timestamp >= (search_interval_OCR):
-            logging.debug("Boucle OCR thread relancé")
-            start_OCR_thread_()
-        
-        # Check if the "escape" key is pressed
+                    # Check if the "escape" key is pressed
+
         if keyboard.is_pressed('escape'):
             logging.debug("Script terminated by user.")
-            break
+            QApplication.quit()
+            return
+
+        # Process other periodic tasks
+        if current_timestamp - start_ocr_timestamp >= search_interval_OCR:
+            logging.debug("Boucle OCR thread relancé")
+            start_OCR_thread_()
+            start_ocr_timestamp = current_timestamp  # Reset the timestamp
 
         app.processEvents()
 
         # Wait for 1 second before checking again
-        time.sleep(2)
+        time.sleep(0.005)
 
 if __name__ == "__main__":
     main()
