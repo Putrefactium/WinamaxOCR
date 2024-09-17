@@ -31,10 +31,12 @@ x_coord_window = 0
 y_coord_window = 0
 string_found = None
 button_stat_window_var = None
-button_table_window_var = []
+button_table_window_var = {}
 button_instances = {}
 start_ocr_timestamp = time.time()
 search_interval_OCR = 1/2 # Interval in seconds to start the OCR thread
+last_pixel_check_timestamp = {} # Initialize a dictionary to store the last pixel check timestamp for each hwnd
+search_interval_pixel_color = 1/2 # Interval in seconds to check the pixel color
 result_frame_hex_color = "#232323" # Hex color code of the result frame in Winamax
 
 threads_done = threading.Event()
@@ -293,7 +295,7 @@ def is_window_visible_(hwnd):
         if top_hwnd == hwnd:
             logging.debug(f"Window {title} is the top window.") # The window is the top window
             return True
-        elif top_title == "python": # Check if the window overlapping is a python frame ### FIXME: Find a better way to ignore python frames
+        elif top_title == "python": # Check if the window overlapping is a python frame (button is) ### FIXME: Find a better way to ignore python frames
             logging.debug(f"Ignoring invisible python window: {top_hwnd}, Title: {top_title}")
         elif full_screen and not win32gui.IsWindowVisible(top_hwnd): # Ignore invisible windows when in full screen
             logging.debug(f"Ignoring invisible window: {top_hwnd}, Title: {top_title}")
@@ -303,13 +305,19 @@ def is_window_visible_(hwnd):
                 rect[1] < top_rect[3] and rect[3] > top_rect[1]):
                 # Get the PID of the overlapping window
                 _, pid = win32process.GetWindowThreadProcessId(top_hwnd)
-                # Ignore explorer.exe windows (it's the taskbar overlapping our table)
-                if pid == explorer_pid:
-                    logging.debug(f"Ignoring explorer.exe window: {top_hwnd}, PID: {pid}")
-                    return True
+                # Ignore explorer.exe taskbar windows (it's the taskbar overlapping our table)
+                if pid == explorer_pid: # Check if the window overlapping is an explorer.exe window (taskbar is if no title)
+                    if top_title != "": # Check if the window overlapping is not the taskbar
+                        logging.info(f"Explorer window: {top_hwnd}, PID: {pid}, Title: {top_title}")
+                        hide_table_button_(hwnd) # Hide the button window if the taskbar is overlapping the table
+                        return False
+                    else:
+                        logging.info(f"Window {hwnd} (Title: {title}) is obscured by the Taskbar, so window is visible.")
+                        return True
                 else:
-                    logging.debug(f"Window {hwnd} (Title: {title}) is obscured by window {top_hwnd} (Title: {top_title}), PID: {pid}.")
+                    logging.info(f"Window {hwnd} (Title: {title}) is obscured by window {top_hwnd} (Title: {top_title}), PID: {pid}.")
                     return False
+                
         top_hwnd = win32gui.GetWindow(top_hwnd, win32con.GW_HWNDNEXT)
     
     logging.debug(f"Window {title} is visible and not obscured.")
@@ -420,14 +428,15 @@ def show_table_button_(coords, hwnd):
 
     global button_table_window_var
 
-    if not button_table_window_var:
-        button_table_window_var = Button_table(coords, hwnd)
-        logging.info(f"Table button window created for HWND: {hwnd}")
-        button_table_window_var.show()
+    if hwnd not in button_table_window_var:
+        button_table_window_var[hwnd] = Button_table(coords, hwnd)
+        logging.debug(f"Table button window created for HWND: {hwnd}")
+        button_table_window_var[hwnd].show()
 
     else:
-        button_table_window_var.setGeometry(QRect(coords[0], coords[1], 100, 100))
-        button_table_window_var.hwnd = hwnd # Update the associated hwnd
+        button = button_table_window_var[hwnd]
+        button.setGeometry(QRect(coords[0], coords[1], 100, 100))
+        button.hwnd = hwnd # Update the associated hwnd
 
 def hide_stat_button_():
     """
@@ -443,7 +452,7 @@ def hide_stat_button_():
 
         logging.debug("Button window closed.")
 
-def hide_table_button_():
+def hide_table_button_(hwnd):
     """
     Hides the button window if it is currently displayed.
     Closes the window and releases the global reference to this instance of Button_table.
@@ -451,9 +460,9 @@ def hide_table_button_():
 
     global button_table_window_var
 
-    if button_table_window_var:
-        button_table_window_var.close()
-        button_table_window_var = None
+    if hwnd in button_table_window_var:
+        button_table_window_var[hwnd].close()
+        del button_table_window_var[hwnd]
 
         logging.debug("Button window closed.")
 
@@ -475,7 +484,7 @@ def save_result_screenshot_(hwnd):
         logging.debug(f"Saving the image in the folder: {full_path}")
 
         if not os.path.exists(full_path):
-            logging.info(f"Creating the folder: {full_path}")
+            logging.debug(f"Creating the folder: {full_path}")
             os.makedirs(full_path)
 
         timestamp = datetime.now().strftime("%d_%m_%Y")
@@ -495,7 +504,7 @@ def save_table_screenshot_(hwnd):
 
     global button_stat_window_var
 
-    hide_table_button_() # Hide the button window before capturing the table result, will reopen once the main loop is done
+    hide_table_button_(hwnd) # Hide the button window before capturing the table result, will reopen once the main loop is done
 
     result_jpg = screen_table_result_(hwnd)
 
@@ -507,7 +516,7 @@ def save_table_screenshot_(hwnd):
         logging.debug(f"Saving the image in the folder: {full_path}")
 
         if not os.path.exists(full_path):
-            logging.info(f"Creating the folder: {full_path}")
+            logging.debug(f"Creating the folder: {full_path}")
             os.makedirs(full_path)
 
         # Get the window title
@@ -674,7 +683,7 @@ def calculate_table_btn_pos_(x, y, hwnd):
 
     return int(x), int(y)
 
-def check_table_pixel_color_(x, y):
+def check_table_pixel_color_(x, y, hwnd):
     """
     Check the pixel color at the specified coordinates (x, y) and return True if the color is #232323, False otherwise.
     This function is used to detect the presence of the result frame in a table window.
@@ -745,11 +754,6 @@ def main():
     global x_coord_window, y_coord_window, start_ocr_timestamp, string_found
 
     app = QApplication([]) # Create a QApplication instance
-
-    # # Timer for periodic tasks
-    # timer = QTimer()
-    # timer.timeout.connect(periodic_tasks)
-    # timer.start(20)  # 20 ms interval
 
     while True:       
         # Get the current timestamp
@@ -830,12 +834,23 @@ def main():
                     x_pixel_check_coord = x + rectangle_coord[0] + 20 # Offset of 20 pixels on the left side of the rectangle to ensure we're in the rectangle
                     y_pixel_check_coord = y + rectangle_coord[1] + 20 # Offset of 20 pixels on the top side of the rectangle to ensure we're in the rectangle
 
-                    # Check the pixel color at the specified coordinates
-                    table_result_displayed = check_table_pixel_color_(x_pixel_check_coord, y_pixel_check_coord)
-                    if table_result_displayed:
-                        logging.debug(f"Result frame on screen : {table_result_displayed} / on table {title}")
+                     # Check the last timestamp for this hwnd
+                    last_check_time = last_pixel_check_timestamp.get(hwnd, 0)  # Default to 0 if no previous check
+                    
+                    # If the time since the last check is greater than the specified interval, proceed
+                    if current_timestamp - last_check_time >= search_interval_pixel_color: 
+                        logging.debug(f"Checking pixel color for table {title}")              
+                        # Check the pixel color at the specified coordinates
+                        table_result_displayed = check_table_pixel_color_(x_pixel_check_coord, y_pixel_check_coord, hwnd)
+                        if table_result_displayed:
+                            logging.debug(f"Result frame on screen : {table_result_displayed} / on table {title}")
+                        else:
+                            logging.debug(f"Result frame not displayed on table {title}")
+                        
+                        last_pixel_check_timestamp[hwnd] = current_timestamp
+
                     else:
-                        logging.debug(f"Result frame not displayed on table {title}")
+                        logging.debug(f"Skipping pixel color check for table {title}")
                         
                     # If the result frame is displayed, draw a button on the screen
                     if table_result_displayed:
@@ -843,8 +858,8 @@ def main():
                             show_table_button_((button_pos_x, button_pos_y), hwnd)
                             logging.debug(f"Draw Button at position: ({button_pos_x}, {button_pos_y}), hwnd: {hwnd}")
                     else:
-                        logging.info("Result frame not displayed.")
-                        # hide_table_button_()
+                        logging.debug("Result frame not displayed.")
+                        hide_table_button_(hwnd)
 
                     ### TEST ONLY ###
                     ### WE TEST THE TABLE SCREENSHOT FUNCTION ###
@@ -878,7 +893,7 @@ def main():
         app.processEvents()
 
         # Wait for 1 second before checking again
-        time.sleep(0.005)
+        # time.sleep(0.5)
 
 if __name__ == "__main__":
     main()
