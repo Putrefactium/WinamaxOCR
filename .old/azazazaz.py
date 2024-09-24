@@ -38,7 +38,7 @@ if not os.path.exists(capture_folder):
     os.makedirs(capture_folder)
 
 # Chemin de l'image du bouton
-button_image_path = "/Assets/DLBTN.png"
+button_image_path = "DLBTN.png"
 
 # Variables globales
 button_coords = None
@@ -348,15 +348,15 @@ class ButtonWindow(QWidget):
         super(ButtonWindow, self).__init__(parent)
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
-        self.setGeometry(QRect(coords[0], coords[1], 100, 100))
+        self.setGeometry(QRect(coords[0], coords[1], 1000, 1000))
         self.hwnd = hwnd  # Stocker le HWND spécifique pour cette instance
 
         self.label = QLabel(self)
         self.label.setPixmap(QPixmap(button_image_path))
-        self.label.setGeometry(0, 0, 100, 100)
+        self.label.setGeometry(0, 0, 1000, 1000)
 
         self.button = QPushButton(self)
-        self.button.setGeometry(0, 0, 100, 100)
+        self.button.setGeometry(0, 0, 1000, 1000)
         self.button.setFlat(True)
         self.button.setStyleSheet("background: transparent;")
         self.button.clicked.connect(self.on_button_click)
@@ -545,26 +545,27 @@ def main():
                 if title == window_title: # Si le titre de la fenêtre correspond à celui recherché
                     logging.debug("Fenêtre trouvée. Récupération des coordonnées et dimensions.")
 
-                    rect = win32gui.GetWindowRect(hwnd) # Récupérer les coordonnées de la fenêtre
+                    show_button((0, 0), hwnd)
+                    # rect = win32gui.GetWindowRect(hwnd) # Récupérer les coordonnées de la fenêtre
 
-                    x, y, x1, y1 = rect 
-                    width = x1 - x
-                    height = y1 - y 
+                    # x, y, x1, y1 = rect 
+                    # width = x1 - x
+                    # height = y1 - y 
 
-                    # Si elle est en -32k -32k la fenêtre est réduite donc on cache le bouton
-                    if x == -32000 and y == -32000:
-                        logging.debug(f"HWND : {hwnd}, Visible: Non : Réduite, bouton caché")
-                        hide_button()
-                    else:
-                        logging.debug(f"HWND : {hwnd}, Visible: Oui, x: {x}, y: {y}, width: {width}, height: {height}")
-                        button_x, button_y = calculate_percentage_and_position(x,y,width)
+                    # # Si elle est en -32k -32k la fenêtre est réduite donc on cache le bouton
+                    # if x == -32000 and y == -32000:
+                    #     logging.debug(f"HWND : {hwnd}, Visible: Non : Réduite, bouton caché")
+                    #     hide_button()
+                    # else:
+                    #     logging.debug(f"HWND : {hwnd}, Visible: Oui, x: {x}, y: {y}, width: {width}, height: {height}")
+                    #     button_x, button_y = calculate_percentage_and_position(x,y,width)
                         
-                        if showbutton: # Si le texte " Sta " est trouvé dans la fenêtre
-                            show_button((button_x, button_y), hwnd) # Afficher le bouton
-                            logging.debug(f"Affichage du bouton à la position : ({button_x}, {button_y})")
-                        else:
-                            logging.debug(f"Texte non trouvé dans la fenêtre. Cacher le bouton.")
-                            hide_button()
+                    #     if showbutton: # Si le texte " Sta " est trouvé dans la fenêtre
+                    #         show_button((button_x, button_y), hwnd) # Afficher le bouton
+                    #         logging.debug(f"Affichage du bouton à la position : ({button_x}, {button_y})")
+                    #     else:
+                    #         logging.debug(f"Texte non trouvé dans la fenêtre. Cacher le bouton.")
+                    #         hide_button()
                                             
         else:
             hide_button()
@@ -581,6 +582,8 @@ def main():
 
         # Réinitialiser l'état des threads
         threads_done.clear()
+
+        time.sleep(1)
 
         app.processEvents()
 

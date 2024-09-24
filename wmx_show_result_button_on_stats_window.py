@@ -25,10 +25,15 @@ import re
 winamax_proc_name = "Winamax.exe"
 winamax_window_name = "Winamax"
 playground_window_name = "Playground"
-winamax_string_searched = "Stat"
+stat_string = "Stat"
+playground_value = list(range(1, 13)) # List of values to search for in the Playground, between 1 and 12 (13 excluded)
 button_image_path = r"Assets\DLBTN.png"
 x_coord_window = 0
 y_coord_window = 0
+x_coord_playground = 0
+y_coord_playground = 0
+playground_width = 0
+playground_height = 0
 string_found = None
 button_stat_window_var = None
 button_table_window_var = {}
@@ -144,12 +149,12 @@ def get_explorer_pid():
             return proc.info['pid']
     return None
 
-def filter_hwnd_list_main_winamax_window_(hwnd_list, window_name):
+def filter_hwnd_list_winamax_window_(hwnd_list, window_name):
     """
-    Filter the hwnd_list to only include hwnd with title equal to winamax_window_name.
+    Filter the hwnd_list to only include hwnd with title equal to window_name.
     Parameters:
     - hwnd_list (list): A list of tuples containing the window handle (hwnd) and the window title (str).
-    - winamax_window_name (str): The window title to filter for.
+    - window_name (str): The window title to filter for.
     Returns:
     - hwnd_list_filtered (list): A filtered list of tuples containing the window handle (hwnd) and the window title (str).
     """
@@ -372,20 +377,35 @@ def OCR_string_search_(img, search_text):
         threads_done.set()
         return found
 
-def start_OCR_thread_():
-    global ocr_thread, start_ocr_timestamp, img, search_text, x_coord_window, y_coord_window
+def start_OCR_Stat_thread_():
+    global start_ocr_timestamp, img, search_text, x_coord_window, y_coord_window
 
     start_ocr_timestamp = time.time()
 
     threads_done.clear()  # Reset the state of the threads
 
-    img = capture_window_region_(x_coord_window, y_coord_window)  # Define the 'img' variable
-    search_text = winamax_string_searched  # Define the 'search_text' variable
+    img = capture_window_region_(x_coord_window, y_coord_window)  
+    search_text = stat_string 
 
     ocr_thread = threading.Thread(target=OCR_string_search_, args=(img, search_text,))
-    logging.debug("Starting OCR thread.")
+    logging.debug("Starting OCR Stat thread.")
 
     ocr_thread.start()
+
+# def start_OCR_Playground_thread_():
+#     global ocr_playground_thread, start_ocr_playground_timestamp, x_coord_playground, y_coord_playground
+
+#     start_ocr_playground_timestamp = time.time()
+
+#     threads_done.clear()  # Reset the state of the threads
+
+#     img = # TODO: capture_playground_region(x play,y play)          # capture_window_region_(x_coord_window, y_coord_window)  
+#     search_text = a 
+
+#     ocr_thread = threading.Thread(target=OCR_string_search_, args=(img, search_text,))
+#     logging.debug("Starting OCR thread.")
+
+#     ocr_thread.start()
 
 def show_stat_button_(coords, hwnd):
     """
@@ -406,9 +426,11 @@ def show_stat_button_(coords, hwnd):
 
     if not button_stat_window_var:
         button_stat_window_var = Button_result(coords, hwnd)
+        logging.debug(f"Button window created for HWND: {hwnd}")
         button_stat_window_var.show()
     else:
         button_stat_window_var.setGeometry(QRect(coords[0], coords[1], 100, 100))
+        logging.debug(f"Button window position updated: ({coords[0]}, {coords[1]}) for HWND: {hwnd}")
         button_stat_window_var.hwnd = hwnd # Update the associated hwnd
 
 def show_table_button_(coords, hwnd):
@@ -724,6 +746,10 @@ class Button_result(QWidget):
         self.button.setStyleSheet("background: transparent;")
         self.button.clicked.connect(self.on_button_click)
 
+        # Ensure the button is always visible and in the first row
+        self.raise_()
+        self.show()
+
     def on_button_click(self):
         logging.debug("Button clicked.")
         save_result_screenshot_(self.hwnd)
@@ -749,9 +775,10 @@ class Button_table(QWidget):
     def on_button_click(self):
         logging.debug("Button clicked.")
         save_table_screenshot_(self.hwnd)
+
 def main():
 
-    global x_coord_window, y_coord_window, start_ocr_timestamp, string_found
+    global x_coord_window, y_coord_window, start_ocr_timestamp, string_found, x_coord_playground, y_coord_playground, playground_width, playground_height
 
     app = QApplication([]) # Create a QApplication instance
 
@@ -775,22 +802,22 @@ def main():
             ### PART 1: Main Winamax Stats window : Drawing button and Screenhot of Results ###
 
             # Get the HWND of main launcher window title
-            wmx_hwnd_list_filtered = filter_hwnd_list_main_winamax_window_(wmx_hwnd_list, winamax_window_name)
+            main_wmx_hwnd_list_filtered = filter_hwnd_list_winamax_window_(wmx_hwnd_list, winamax_window_name)
 
             # Check if the filtered Window HWND is found
-            if wmx_hwnd_list_filtered:
+            if main_wmx_hwnd_list_filtered:
                 # Get the first HWND and title from the filtered list
-                hwnd, title = wmx_hwnd_list_filtered[0]
+                hwnd, title = main_wmx_hwnd_list_filtered[0]
                 logging.debug(f"Winamax window found: {title} (HWND: {hwnd})")
 
                 # Get the position and dimensions of the window
                 x, y, width, height = get_window_position_and_dimensions_(hwnd)
-                logging.debug(f"Window position: ({x}, {y}), dimensions: {width}x{height}")
+                logging.debug(f"{title} position: ({x}, {y}), dimensions: {width}x{height}")
 
                 # Check if the window is minimized
                 if x == -32000 and y == -32000:
                     string_found = False
-                    hide_stat_button_()
+                   # hide_stat_button_()
                     logging.debug("Window is minimized")
                 else:
                     # Store the coordinates of the window
@@ -802,10 +829,10 @@ def main():
                         button_pos_x, button_pos_y = calculate_stat_btn_pos_(x, y, width)
                         logging.debug(f"Button position: ({button_pos_x}, {button_pos_y}), hwnd: {hwnd}")
                         show_stat_button_((button_pos_x, button_pos_y), hwnd)
-                        logging.debug(f"Affichage du bouton à la position : ({button_pos_x}, {button_pos_y}")
+                        logging.debug(f"Affichage du bouton à la position : {button_pos_x}, {button_pos_y}")
                     else:
                         logging.debug("String not found.")
-                        hide_stat_button_()
+                        # hide_stat_button_()
 
                     # Réinitialiser l'état des threads
                     threads_done.clear()   
@@ -813,6 +840,35 @@ def main():
                 ### END OF PART 1 ###
 
                 ### PART 2: Winamax Tables detection ###
+
+            # Check if Playground is found
+
+            playground_wmx_hwnd_list_filtered = filter_hwnd_list_winamax_window_(wmx_hwnd_list, playground_window_name)
+
+            if playground_wmx_hwnd_list_filtered:
+                # Get the first HWND and title from the filtered list
+                hwnd, title = playground_wmx_hwnd_list_filtered[0]
+                logging.info(f"Playground window found: {title} (HWND: {hwnd})")
+
+                # Get the position and dimensions of the Playground window
+                x_coord_playground, y_coord_playground, playground_width, playground_height = get_window_position_and_dimensions_(hwnd)
+
+                # Check if the Playground window is minimized
+                if x_coord_playground == -32000 and y_coord_playground == -32000:
+                    string_found = False
+                    logging.info(f"{title} is minimized")
+                else:
+                    logging.info(f"{title} position: ({x_coord_playground}, {y_coord_playground}), dimensions: {playground_width}x{playground_height}")
+
+                # Once detected, part where all the magic happens for Playground
+
+                # Find 
+
+
+
+            else:
+                logging.info("Playground window not found.")
+                x_coord_playground, y_coord_playground, playground_width, playground_height = 0, 0, 0, 0
 
             # Get the HWNDs of all Winamax tables
             wmx_hwnd_table_list = filter_hwnd_list_winamax_tables_(wmx_hwnd_list, winamax_window_name)
@@ -887,13 +943,13 @@ def main():
         # Process other periodic tasks
         if current_timestamp - start_ocr_timestamp >= search_interval_OCR:
             logging.debug("Boucle OCR thread relancé")
-            start_OCR_thread_()
+            start_OCR_Stat_thread_()
             start_ocr_timestamp = current_timestamp  # Reset the timestamp
 
         app.processEvents()
 
         # Wait for 1 second before checking again
-        # time.sleep(0.5)
+        time.sleep(1)
 
 if __name__ == "__main__":
     main()
