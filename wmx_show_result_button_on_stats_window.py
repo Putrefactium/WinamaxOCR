@@ -3,12 +3,14 @@ import win32gui
 import win32con
 import win32api
 import win32process
+import win32clipboard
 import time
 import locale
 from datetime import datetime
 from PIL import Image
 import pytesseract 
 import os
+import io
 import mss
 import pygetwindow as gw
 from PyQt5.QtWidgets import QApplication, QLabel, QPushButton, QWidget
@@ -31,7 +33,8 @@ x_coord_window = 0
 y_coord_window = 0
 string_found = None
 button_stat_window_var = None
-button_table_window_var = {}
+button_save_table_window_var = {} 
+button_cpy_table_window_var = {}
 button_instances = {}
 start_ocr_timestamp = time.time()
 search_interval_OCR = 1/2 # Interval in seconds to start the OCR thread
@@ -43,7 +46,7 @@ threads_done = threading.Event()
 input_queue = queue.Queue() # Queue for storing inputs
 
 # Enable verbose logging
-VERBOSE_LOGGING = False
+VERBOSE_LOGGING = True
 
 # Configure logging
 logging.basicConfig(
@@ -53,7 +56,7 @@ logging.basicConfig(
 )
 
 # Path to the Tesseract executable
-pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files (x86)\Tesseract-OCR\tesseract.exe'
 
 # Path to the folder where the Sessions captures will be saved
 stat_folder = "Statistiques Sessions"
@@ -259,7 +262,7 @@ def is_window_visible_(hwnd):
     - bool: True if the window is visible on the screen and not obscured, False otherwise.
     """
 
-    global button_table_window_var
+    global button_save_table_window_var
 
     # Get the PID of explorer.exe
     explorer_pid = get_explorer_pid()
@@ -309,7 +312,7 @@ def is_window_visible_(hwnd):
                 if pid == explorer_pid: # Check if the window overlapping is an explorer.exe window (taskbar is if no title)
                     if top_title != "": # Check if the window overlapping is not the taskbar
                         logging.info(f"Explorer window: {top_hwnd}, PID: {pid}, Title: {top_title}")
-                        hide_table_button_(hwnd) # Hide the button window if the taskbar is overlapping the table
+                        hide_table_buttons_(hwnd) # Hide the button window if the taskbar is overlapping the table
                         return False
                     else:
                         logging.info(f"Window {hwnd} (Title: {title}) is obscured by the Taskbar, so window is visible.")
@@ -398,50 +401,60 @@ def show_stat_button_(coords, hwnd):
 
     Note:
     - This function uses a global variable `button_stat_window_var` to keep track of the button window instance.
-    - If the button window is not already displayed, it creates a new instance of `Button_result` and shows it.
+    - If the button window is not already displayed, it creates a new instance of `Button_save_result` and shows it.
     - If the button window is already displayed, it updates its position, brings it to the front, and updates the associated hwnd.
     """
 
     global button_stat_window_var
 
     if not button_stat_window_var:
-        button_stat_window_var = Button_result(coords, hwnd)
+        button_stat_window_var = Button_save_result(coords, hwnd)
         button_stat_window_var.show()
     else:
         button_stat_window_var.setGeometry(QRect(coords[0], coords[1], 100, 100))
         button_stat_window_var.hwnd = hwnd # Update the associated hwnd
 
-def show_table_button_(coords, hwnd):
+def show_table_buttons_(coords, hwnd):
     """
-    Displays a button window at the specified coordinates and associates it with the given window handle (hwnd).
-    If the button window is already displayed, it updates its position and brings it to the front.
+    Displays two button windows at the specified coordinates and associates them with the given window handle (hwnd).
+    If the button windows are already displayed, it updates their positions.
 
     Parameters:
     - coords (tuple): A tuple containing the x and y coordinates where the button should be displayed.
     - hwnd (int): The window handle (hwnd) of the window to associate with the button.
 
     Note:
-    - This function uses a global variable `button_table_window_var` to keep track of the button window instance.
-    - If the button window is not already displayed, it creates a new instance of `Button_table` and shows it.
-    - If the button window is already displayed, it updates its position, brings it to the front, and updates the associated hwnd.
+    - This function uses global variables `button_save_table_window_var` and `button_cpy_table_window_var` to keep track of the button window instances.
+    - If the button windows are not already displayed, it creates new instances of `Button_save_table` and `Button_cpy_table` and shows them.
+    - If the button windows are already displayed, it updates their positions, brings them to the front, and updates the associated hwnd.
     """
 
-    global button_table_window_var
+    global button_save_table_window_var, button_cpy_table_window_var
 
-    if hwnd not in button_table_window_var:
-        button_table_window_var[hwnd] = Button_table(coords, hwnd)
-        logging.debug(f"Table button window created for HWND: {hwnd}")
-        button_table_window_var[hwnd].show()
+    if hwnd not in button_save_table_window_var:
+        button_save_table_window_var[hwnd] = Button_save_table(coords, hwnd)
+        logging.debug(f"Save table button created for HWND: {hwnd}")
+        button_save_table_window_var[hwnd].show()
 
     else:
-        button = button_table_window_var[hwnd]
+        button = button_save_table_window_var[hwnd]
         button.setGeometry(QRect(coords[0], coords[1], 100, 100))
+        button.hwnd = hwnd # Update the associated hwnd
+
+    if hwnd not in button_cpy_table_window_var:
+        button_cpy_table_window_var[hwnd] = Button_cpy_table((coords[0], coords[1]-100), hwnd)
+        logging.debug(f"Copy button created for HWND: {hwnd}")
+        button_cpy_table_window_var[hwnd].show()
+
+    else:
+        button = button_cpy_table_window_var[hwnd]
+        button.setGeometry(QRect(coords[0], coords[1]-100, 100, 100))
         button.hwnd = hwnd # Update the associated hwnd
 
 def hide_stat_button_():
     """
     Hides the button window if it is currently displayed.
-    Closes the window and releases the global reference to this instance of Button_result.
+    Closes the window and releases the global reference to this instance of Button_save_result.
     """
 
     global button_stat_window_var
@@ -452,19 +465,25 @@ def hide_stat_button_():
 
         logging.debug("Button window closed.")
 
-def hide_table_button_(hwnd):
+def hide_table_buttons_(hwnd):
     """
-    Hides the button window if it is currently displayed.
-    Closes the window and releases the global reference to this instance of Button_table.
+    Hides the save and copy button windows associated with the specified window handle (hwnd).
+    Closes the windows and removes their references from the global dictionaries.
+    
+    Parameters:
+    - hwnd (int): The window handle (hwnd) of the window whose buttons should be hidden.
     """
 
-    global button_table_window_var
+    global button_save_table_window_var, button_cpy_table_window_var
 
-    if hwnd in button_table_window_var:
-        button_table_window_var[hwnd].close()
-        del button_table_window_var[hwnd]
+    if hwnd in button_save_table_window_var or hwnd in button_cpy_table_window_var:
+        button_save_table_window_var[hwnd].close()
+        button_cpy_table_window_var[hwnd].close()
+        del button_save_table_window_var[hwnd]
+        del button_cpy_table_window_var[hwnd]
 
-        logging.debug("Button window closed.")
+        logging.debug(f"Save button closed on window with HWND: {hwnd}")
+        logging.debug(f"Copy button closed on window with HWND: {hwnd}")
 
 def save_result_screenshot_(hwnd):
     """
@@ -502,9 +521,9 @@ def save_table_screenshot_(hwnd):
     :param hwnd: Handle of the window whose image needs to be captured
     """
 
-    global button_stat_window_var
+    # FIXIT : test without this # global button_stat_window_var
 
-    hide_table_button_(hwnd) # Hide the button window before capturing the table result, will reopen once the main loop is done
+    hide_table_buttons_(hwnd) # Hide the button window before capturing the table result, will reopen once the main loop is done
 
     result_jpg = screen_table_result_(hwnd)
 
@@ -683,7 +702,7 @@ def calculate_table_btn_pos_(x, y, hwnd):
 
     return int(x), int(y)
 
-def check_table_pixel_color_(x, y, hwnd):
+def check_table_pixel_color_(x, y):
     """
     Check the pixel color at the specified coordinates (x, y) and return True if the color is #232323, False otherwise.
     This function is used to detect the presence of the result frame in a table window.
@@ -706,9 +725,30 @@ def check_table_pixel_color_(x, y, hwnd):
 
     return hex_color == result_frame_hex_color
 
-class Button_result(QWidget):
+def cpy_table_screenshot_(hwnd):
+
+    hide_table_buttons_(hwnd) # Hide the button window before capturing the table result, will reopen once the main loop is done
+
+    result_jpg = screen_table_result_(hwnd)
+
+    if result_jpg:
+        output = io.BytesIO()
+        result_jpg.save(output, format="JPEG")
+        data = output.getvalue()
+        output.close()
+
+        # Copy the image to the clipboard
+        win32clipboard.OpenClipboard()
+        win32clipboard.EmptyClipboard()
+        win32clipboard.SetClipboardData(win32con.CF_DIB, data)
+        win32clipboard.CloseClipboard()
+
+        logging.info("Image from Hwnd : {hwnd} successfully copied to clipboard.")
+    return 
+
+class Button_save_result(QWidget):
     def __init__(self, coords, hwnd, parent=None):
-        super(Button_result, self).__init__(parent)
+        super(Button_save_result, self).__init__(parent)
         self.hwnd = hwnd
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
@@ -728,9 +768,9 @@ class Button_result(QWidget):
         logging.debug("Button clicked.")
         save_result_screenshot_(self.hwnd)
 
-class Button_table(QWidget):
+class Button_save_table(QWidget):
     def __init__(self, coords, hwnd, parent=None):
-        super(Button_table, self).__init__(parent)
+        super(Button_save_table, self).__init__(parent)
         self.hwnd = hwnd
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
@@ -749,6 +789,29 @@ class Button_table(QWidget):
     def on_button_click(self):
         logging.debug("Button clicked.")
         save_table_screenshot_(self.hwnd)
+
+class Button_cpy_table(QWidget):
+    def __init__(self, coords, hwnd, parent=None):
+        super(Button_cpy_table, self).__init__(parent)
+        self.hwnd = hwnd
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setGeometry(QRect(coords[0], coords[1], 100, 100))
+
+        self.label = QLabel(self)
+        self.label.setPixmap(QPixmap(button_image_path))
+        self.label.setGeometry(0, 0, 100, 100)
+
+        self.button = QPushButton(self)
+        self.button.setGeometry(0, 0, 100, 100)
+        self.button.setFlat(True)
+        self.button.setStyleSheet("background: transparent;")
+        self.button.clicked.connect(self.on_button_click)
+
+    def on_button_click(self):
+        logging.debug("Button clicked.")
+        cpy_table_screenshot_(self.hwnd)
+
 def main():
 
     global x_coord_window, y_coord_window, start_ocr_timestamp, string_found
@@ -772,7 +835,7 @@ def main():
             wmx_hwnd_list = get_wmx_hwnd_and_title_(wmx_pids)
             logging.debug(f"Winamax HWNDs: {wmx_hwnd_list}")
 
-            ### PART 1: Main Winamax Stats window : Drawing button and Screenhot of Results ###
+            ### PART 1: Main Winamax Stats window : Drawing button and Screenshot of Results ###
 
             # Get the HWND of main launcher window title
             wmx_hwnd_list_filtered = filter_hwnd_list_main_winamax_window_(wmx_hwnd_list, winamax_window_name)
@@ -841,7 +904,7 @@ def main():
                     if current_timestamp - last_check_time >= search_interval_pixel_color: 
                         logging.debug(f"Checking pixel color for table {title}")              
                         # Check the pixel color at the specified coordinates
-                        table_result_displayed = check_table_pixel_color_(x_pixel_check_coord, y_pixel_check_coord, hwnd)
+                        table_result_displayed = check_table_pixel_color_(x_pixel_check_coord, y_pixel_check_coord)
                         if table_result_displayed:
                             logging.debug(f"Result frame on screen : {table_result_displayed} / on table {title}")
                         else:
@@ -852,26 +915,20 @@ def main():
                     else:
                         logging.debug(f"Skipping pixel color check for table {title}")
                         
-                    # If the result frame is displayed, draw a button on the screen
-                    if table_result_displayed:
-                            button_pos_x, button_pos_y = calculate_table_btn_pos_(x, y, hwnd)
-                            show_table_button_((button_pos_x, button_pos_y), hwnd)
-                            logging.debug(f"Draw Button at position: ({button_pos_x}, {button_pos_y}), hwnd: {hwnd}")
-                    else:
-                        logging.debug("Result frame not displayed.")
-                        hide_table_button_(hwnd)
+                    # TEST : Desactivate this part
 
-                    ### TEST ONLY ###
-                    ### WE TEST THE TABLE SCREENSHOT FUNCTION ###
-                    ### TO BE REMOVED IN PRODUCTION ###
-                    ### FROM HERE WE NEED TO LAUNCH PIXEL COLOR CHECK ON EACH VISIBLE TABLE TO FIND THE RESULT WINDOW ###
-                    ### IF THE PIXEL COLOR IS THE SAME AS THE RESULT WINDOW, WE DRAW A BUTTON AT A SPECIFIC COORD GIVEN BY TABLE COORD AND SIZE ###
-                    ### WHEN THE BUTTON IS CLICKED, WE SAVE THE SCREENSHOT OF THE RESULT WINDOW ###
-                    
-                    # save_table_screenshot_(hwnd) # Save the screenshot of the table
-                    # logging.debug(f"Saving the screenshot of the table {title}")
+                    # # If the result frame is displayed, draw a button on the screen
+                    # if table_result_displayed:
+                    #         button_pos_x, button_pos_y = calculate_table_btn_pos_(x, y, hwnd)
+                    #         show_table_buttons_((button_pos_x, button_pos_y), hwnd)
+                    #         logging.debug(f"Draw Button at position: ({button_pos_x}, {button_pos_y}), hwnd: {hwnd}")
+                    # else:
+                    #     logging.debug("Result frame not displayed.")
+                    #     hide_table_buttons_(hwnd)
 
-                    ### TEST ONLY ###
+                    button_pos_x, button_pos_y = calculate_table_btn_pos_(x, y, hwnd)
+                    show_table_buttons_((button_pos_x, button_pos_y), hwnd)
+                    logging.debug(f"Draw Buttons at position: ({button_pos_x}, {button_pos_y}), hwnd: {hwnd}")
 
                     ### END OF PART 2 ###
 
@@ -893,7 +950,7 @@ def main():
         app.processEvents()
 
         # Wait for 1 second before checking again
-        # time.sleep(0.5)
+        time.sleep(0.5)
 
 if __name__ == "__main__":
     main()
