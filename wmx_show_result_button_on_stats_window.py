@@ -43,7 +43,7 @@ threads_done = threading.Event()
 input_queue = queue.Queue() # Queue for storing inputs
 
 # Enable verbose logging
-VERBOSE_LOGGING = False
+VERBOSE_LOGGING = True
 
 # Configure logging
 logging.basicConfig(
@@ -406,9 +406,11 @@ def show_stat_button_(coords, hwnd):
 
     if not button_stat_window_var:
         button_stat_window_var = Button_result(coords, hwnd)
+        logging.debug(f"Button window created for HWND: {hwnd}")
         button_stat_window_var.show()
     else:
         button_stat_window_var.setGeometry(QRect(coords[0], coords[1], 100, 100))
+        logging.debug(f"Button window position updated: ({coords[0]}, {coords[1]}) for HWND: {hwnd}")
         button_stat_window_var.hwnd = hwnd # Update the associated hwnd
 
 def show_table_button_(coords, hwnd):
@@ -724,6 +726,10 @@ class Button_result(QWidget):
         self.button.setStyleSheet("background: transparent;")
         self.button.clicked.connect(self.on_button_click)
 
+        # Ensure the button is always visible and in the first row
+        self.raise_()
+        self.show()
+
     def on_button_click(self):
         logging.debug("Button clicked.")
         save_result_screenshot_(self.hwnd)
@@ -749,6 +755,7 @@ class Button_table(QWidget):
     def on_button_click(self):
         logging.debug("Button clicked.")
         save_table_screenshot_(self.hwnd)
+
 def main():
 
     global x_coord_window, y_coord_window, start_ocr_timestamp, string_found
@@ -790,7 +797,7 @@ def main():
                 # Check if the window is minimized
                 if x == -32000 and y == -32000:
                     string_found = False
-                    hide_stat_button_()
+                   # hide_stat_button_()
                     logging.debug("Window is minimized")
                 else:
                     # Store the coordinates of the window
@@ -802,10 +809,10 @@ def main():
                         button_pos_x, button_pos_y = calculate_stat_btn_pos_(x, y, width)
                         logging.debug(f"Button position: ({button_pos_x}, {button_pos_y}), hwnd: {hwnd}")
                         show_stat_button_((button_pos_x, button_pos_y), hwnd)
-                        logging.debug(f"Affichage du bouton à la position : ({button_pos_x}, {button_pos_y}")
+                        logging.debug(f"Affichage du bouton à la position : {button_pos_x}, {button_pos_y}")
                     else:
                         logging.debug("String not found.")
-                        hide_stat_button_()
+                        # hide_stat_button_()
 
                     # Réinitialiser l'état des threads
                     threads_done.clear()   
@@ -893,7 +900,7 @@ def main():
         app.processEvents()
 
         # Wait for 1 second before checking again
-        # time.sleep(0.5)
+        time.sleep(1)
 
 if __name__ == "__main__":
     main()
