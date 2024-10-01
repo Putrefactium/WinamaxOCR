@@ -54,7 +54,7 @@ ocr_playground_thread_done = threading.Event()
 input_queue = queue.Queue() # Queue for storing inputs
 
 # Enable verbose logging
-VERBOSE_LOGGING = False
+VERBOSE_LOGGING = True
 
 # Configure logging
 logging.basicConfig(
