@@ -1,4 +1,6 @@
 import psutil
+import cv2
+import numpy as np
 import win32gui
 import win32con
 import win32api
@@ -13,7 +15,7 @@ import mss
 import pygetwindow as gw
 from PyQt5.QtWidgets import QApplication, QLabel, QPushButton, QWidget
 from PyQt5.QtGui import QPixmap
-from PyQt5.QtCore import Qt, QRect, QTimer
+from PyQt5.QtCore import Qt, QRect
 import threading
 import queue
 import keyboard
@@ -26,16 +28,19 @@ winamax_proc_name = "Winamax.exe"
 winamax_window_name = "Winamax"
 playground_window_name = "Playground"
 stat_string = "Stat"
-playground_value = list(range(1, 13)) # List of values to search for in the Playground, between 1 and 12 (13 excluded)
+playground_value = "1" # list(range(1, 13)) # List of values to search for in the Playground, between 1 and 12 (13 excluded)
 button_image_path = r"Assets\DLBTN.png"
+template_dir = 'Assets'
+num_templates = 12
 x_coord_window = 0
 y_coord_window = 0
 x_coord_playground = 0
 y_coord_playground = 0
 playground_width = 0
 playground_height = 0
-string_found = None
-button_stat_window_var = None
+string_found = None  
+playground_table_value_found = None
+button_stat_window_var =     None
 button_table_window_var = {}
 button_instances = {}
 start_ocr_timestamp = time.time()
@@ -44,7 +49,8 @@ last_pixel_check_timestamp = {} # Initialize a dictionary to store the last pixe
 search_interval_pixel_color = 1/2 # Interval in seconds to check the pixel color
 result_frame_hex_color = "#232323" # Hex color code of the result frame in Winamax
 
-threads_done = threading.Event()
+ocr_stat_thread_done = threading.Event()
+ocr_playground_thread_done = threading.Event()
 input_queue = queue.Queue() # Queue for storing inputs
 
 # Enable verbose logging
@@ -368,21 +374,135 @@ def OCR_string_search_(img, search_text):
         logging.debug(f"Text found: {found}")
         string_found = found # Update the global variable for the main loop
 
-        threads_done.set()
+        ocr_stat_thread_done.set()
 
     except Exception as e:
         logging.debug(f"Error occurred while searching for text in the image: {e}")
         found = False
         string_found = found # Update the global variable for the main loop
-        threads_done.set()
+        ocr_stat_thread_done.set()
         return found
+
+def OCR_playground_value_search_(img, search_texts):
+    """
+    Search for specific texts in an image using OCR (Optical Character Recognition).
+
+    :param img: PIL image to search the texts in
+    :param search_texts: List of texts to search in the image
+    :return: True if any of the texts are found in the image, False otherwise
+    :return: playground_table_value_found value to the global variable
+    """
+
+    global playground_table_value_found 
+
+    logging.info(f"Searching for texts '{search_texts}' in the image.")
+
+    try:
+        text = pytesseract.image_to_string(img, lang='eng')
+        found = any(search_text in text for search_text in search_texts)
+        logging.info(f"Text found: {found}")
+        playground_table_value_found = found # Update the global variable for the main loop
+
+        ocr_stat_thread_done.set()
+
+    except Exception as e:
+        logging.info(f"Error occurred while searching for text in the image: {e}")
+        found = False
+        playground_table_value_found = found # Update the global variable for the main loop
+        ocr_stat_thread_done.set()
+        return found
+
+    return found
+
+def pil_to_cv2(pil_image):
+    """
+    Convert a PIL image to an OpenCV image (NumPy array).
+    """
+    return cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
+
+def load_templates(template_dir, num_templates):
+    """
+    Load template images from the specified directory.
+
+    :param template_dir: Directory containing the template images
+    :param num_templates: Number of templates to load
+    :return: List of template images as NumPy arrays
+    """
+    templates = []
+    for i in range(1, num_templates + 1):
+        template_path = os.path.join(template_dir, f'{i}.jpg')
+        template = cv2.imread(template_path)
+        if template is not None:
+            templates.append(template)
+        else:
+            logging.warning(f"Template {i}.jpg not found in {template_dir}")
+    return templates
+
+def image_comparison_search(img, templates):
+    """
+    Search for specific templates in an image using image comparison.
+
+    :param img: Main image to search in (as a numpy array)
+    :param templates: List of template images to search for (as numpy arrays)
+    :return: Tuple (found, matched_value) where found is True if any of the templates are found in the image,
+             and matched_value is the value of the matched template or None if no match is found.
+    :return: playground_table_value_found value to the global variable
+    """
+
+    global playground_table_value_found
+
+    logging.info(f"Searching for templates in the image.")
+
+    try:
+        # Convert the main image to grayscale
+        img_gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+        found = False
+        matched_value = None
+
+        for i, template in enumerate(templates):
+            # Convert the template to grayscale
+            template_gray = cv2.cvtColor(template, cv2.COLOR_BGR2GRAY)
+
+            # Perform template matching
+            result = cv2.matchTemplate(img_gray, template_gray, cv2.TM_CCOEFF_NORMED)
+
+            # Get the best match position
+            min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
+
+            # Define a threshold for a good match
+            threshold = 0.8
+
+            if max_val >= threshold:
+                found = True
+                matched_value = i + 1  # Assuming template values are 1-based index
+                logging.info(f"Template {matched_value} found with max_val: {max_val} at location: {max_loc}")
+
+                # Draw a bounding box around the detected match
+                h, w = template_gray.shape
+                top_left = max_loc
+                bottom_right = (top_left[0] + w, top_left[1] + h)
+                cv2.rectangle(img, top_left, bottom_right, (0, 255, 0), 2)
+
+                break  # Stop after finding the first match
+
+        playground_table_value_found = found  # Update the global variable for the main loop
+
+    except Exception as e:
+        logging.info(f"Error occurred while searching for templates in the image: {e}")
+        found = False
+        matched_value = None
+        playground_table_value_found = found  # Update the global variable for the main loop
+        return found, matched_value
+
+    return found, matched_value
 
 def start_OCR_Stat_thread_():
     global start_ocr_timestamp, img, search_text, x_coord_window, y_coord_window
 
     start_ocr_timestamp = time.time()
 
-    threads_done.clear()  # Reset the state of the threads
+    ocr_stat_thread_done.clear()  # Reset the state of the threads
 
     img = capture_window_region_(x_coord_window, y_coord_window)  
     search_text = stat_string 
@@ -392,20 +512,41 @@ def start_OCR_Stat_thread_():
 
     ocr_thread.start()
 
-# def start_OCR_Playground_thread_():
-#     global ocr_playground_thread, start_ocr_playground_timestamp, x_coord_playground, y_coord_playground
+def start_OCR_Playground_thread_():
 
-#     start_ocr_playground_timestamp = time.time()
+    global ocr_playground_thread, start_ocr_playground_timestamp, x_coord_playground, y_coord_playground
 
-#     threads_done.clear()  # Reset the state of the threads
+    start_ocr_playground_timestamp = time.time()
 
-#     img = # TODO: capture_playground_region(x play,y play)          # capture_window_region_(x_coord_window, y_coord_window)  
-#     search_text = a 
+    ocr_playground_thread_done.clear()  # Reset the state of the threads
 
-#     ocr_thread = threading.Thread(target=OCR_string_search_, args=(img, search_text,))
-#     logging.debug("Starting OCR thread.")
+    img = capture_playground_region_(x_coord_playground, y_coord_playground)          # capture_window_region_(x_coord_window, y_coord_window)
+    search_text = playground_value
 
-#     ocr_thread.start()
+    ocr_thread = threading.Thread(target=OCR_string_search_, args=(img, search_text,))
+    logging.debug("Starting OCR thread.")
+
+    ocr_thread.start()
+
+def capture_playground_region_(x, y):
+    """
+    Captures the region of the Playground window and its coordinates.
+    Parameters:
+    - x (int): The x-coordinate of the top-left corner of the region.
+    - y (int): The y-coordinate of the top-left corner of the region.
+    - We use hard coded offsets as we know the exact text position we are looking for to form the region.
+    Returns:
+    - image: The captured image of the region.
+    """
+
+    region = (x + 172, y + 7, x + 200, y + 22)
+
+    # Capture the region of the window
+    with mss.mss() as sct:
+            img = sct.grab(region)
+            img_pil = Image.frombytes('RGB', img.size, img.rgb)
+    
+    return img_pil
 
 def show_stat_button_(coords, hwnd):
     """
@@ -835,7 +976,7 @@ def main():
                         # hide_stat_button_()
 
                     # Réinitialiser l'état des threads
-                    threads_done.clear()   
+                    ocr_stat_thread_done.clear()   
 
                 ### END OF PART 1 ###
 
@@ -855,15 +996,35 @@ def main():
 
                 # Check if the Playground window is minimized
                 if x_coord_playground == -32000 and y_coord_playground == -32000:
-                    string_found = False
+                    playground_table_img = False
                     logging.info(f"{title} is minimized")
                 else:
                     logging.info(f"{title} position: ({x_coord_playground}, {y_coord_playground}), dimensions: {playground_width}x{playground_height}")
 
                 # Once detected, part where all the magic happens for Playground
 
-                # Find 
+                # Find the number of tables 
 
+                playground_table_pil = capture_playground_region_(x_coord_playground, y_coord_playground)
+                playground_table_img = pil_to_cv2(playground_table_pil)
+                
+                templates = load_templates(template_dir, num_templates)
+                
+                if playground_table_pil:
+                    # Perform the image comparison search
+                    found, matched_value = image_comparison_search(playground_table_img, templates)      
+                    if found:
+                        print(f"Matched template value: {matched_value}")
+                    else:
+                        print("No match found")
+                        
+                    # screenshot of the Playground table to test and save
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    file_path = os.path.join(os.path.dirname(__file__), f"playground_table_{timestamp}.jpg")
+                    playground_table_pil.save(file_path, "JPEG")
+                    logging.info(f"Playground table image saved: {file_path}")
+                else:
+                      logging.info("No playground table value captured.")
 
 
             else:
